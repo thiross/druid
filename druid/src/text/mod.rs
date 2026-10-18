@@ -15,6 +15,8 @@ mod movement;
 mod rich_text;
 mod storage;
 
+#[cfg(feature = "tui")]
+pub use crate::piet::BigTextSize;
 pub use crate::piet::{FontFamily, FontStyle, FontWeight, TextAlignment};
 pub use druid_shell::text::{
     Action as TextAction, Affinity, Direction, Event as ImeInvalidation, InputHandler, Movement,

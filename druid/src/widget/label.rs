@@ -10,6 +10,8 @@ use druid_shell::Cursor;
 
 use crate::debug_state::DebugState;
 use crate::kurbo::Vec2;
+#[cfg(feature = "tui")]
+use crate::text::BigTextSize;
 use crate::text::TextStorage;
 use crate::widget::prelude::*;
 use crate::widget::Axis;
@@ -184,6 +186,19 @@ impl<T: TextStorage> RawLabel<T> {
         self
     }
 
+    /// Builder-style method to render this label using terminal big text.
+    ///
+    /// Big text is a terminal-only display mode with discrete glyph
+    /// footprints. It is intended for short display titles and cannot be
+    /// mixed inline with normal text.
+    ///
+    /// This method is available when the `tui` feature is enabled.
+    #[cfg(feature = "tui")]
+    pub fn with_big_text(mut self, size: BigTextSize) -> Self {
+        self.set_big_text(size);
+        self
+    }
+
     /// Set the text color.
     ///
     /// The argument can be either a `Color` or a [`Key<Color>`].
@@ -241,6 +256,32 @@ impl<T: TextStorage> RawLabel<T> {
     /// Set the [`TextAlignment`] for this layout.
     pub fn set_text_alignment(&mut self, alignment: TextAlignment) {
         self.layout.set_text_alignment(alignment);
+    }
+
+    /// Set the terminal big-text size for this label.
+    ///
+    /// If you change this property, you are responsible for calling
+    /// [`request_layout`] to ensure the label is updated.
+    ///
+    /// This method is available when the `tui` feature is enabled.
+    ///
+    /// [`request_layout`]: EventCtx::request_layout
+    #[cfg(feature = "tui")]
+    pub fn set_big_text(&mut self, size: BigTextSize) {
+        self.layout.set_big_text(size);
+    }
+
+    /// Disable terminal big text for this label.
+    ///
+    /// If you change this property, you are responsible for calling
+    /// [`request_layout`] to ensure the label is updated.
+    ///
+    /// This method is available when the `tui` feature is enabled.
+    ///
+    /// [`request_layout`]: EventCtx::request_layout
+    #[cfg(feature = "tui")]
+    pub fn clear_big_text(&mut self) {
+        self.layout.clear_big_text();
     }
 
     /// Draw this label's text at the provided `Point`, without internal padding.
@@ -381,6 +422,19 @@ impl<T: Data> Label<T> {
     /// Builder-style method to set the [`TextAlignment`].
     pub fn with_text_alignment(mut self, alignment: TextAlignment) -> Self {
         self.label.set_text_alignment(alignment);
+        self
+    }
+
+    /// Builder-style method to render this label using terminal big text.
+    ///
+    /// Big text is a terminal-only display mode with discrete glyph
+    /// footprints. It is intended for short display titles and cannot be
+    /// mixed inline with normal text.
+    ///
+    /// This method is available when the `tui` feature is enabled.
+    #[cfg(feature = "tui")]
+    pub fn with_big_text(mut self, size: BigTextSize) -> Self {
+        self.label.set_big_text(size);
         self
     }
 

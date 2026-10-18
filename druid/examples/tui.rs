@@ -6,6 +6,7 @@
 //! Run with:
 //! `cargo run -p druid --example tui --no-default-features --features tui`
 
+use druid::text::BigTextSize;
 use druid::widget::{Button, Flex, Label, TextBox};
 use druid::{AppLauncher, Data, Lens, UnitPoint, WidgetExt, WindowDesc};
 
@@ -31,6 +32,8 @@ fn main() {
 }
 
 fn build_root() -> impl druid::Widget<AppState> {
+    let title = Label::new("DRUID TUI").with_big_text(BigTextSize::Quadrant);
+
     let greeting = Label::new(|data: &AppState, _: &druid::Env| {
         if data.name.is_empty() {
             "Hello!".to_string()
@@ -49,6 +52,8 @@ fn build_root() -> impl druid::Widget<AppState> {
     let button = Button::new("Press me").on_click(|_, data: &mut AppState, _| data.count += 1);
 
     Flex::column()
+        .with_child(title)
+        .with_spacer(8.0)
         .with_child(greeting)
         .with_spacer(16.0)
         .with_child(textbox)

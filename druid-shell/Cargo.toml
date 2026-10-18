@@ -19,7 +19,12 @@ cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
 [features]
 default = ["gtk"]
 native = ["dep:piet-common", "piet-common/native"]
-tui = ["dep:piet-common", "piet-common/tui", "dep:ratatui"]
+tui = [
+    "dep:piet-common",
+    "piet-common/tui",
+    "piet-common/tui-big-text",
+    "dep:ratatui",
+]
 gtk = ["native", "gtk-rs", "cairo-rs"]
 x11 = [
     "native",

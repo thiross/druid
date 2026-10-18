@@ -8,6 +8,8 @@ use std::rc::Rc;
 
 use super::{EnvUpdateCtx, Link, TextStorage};
 use crate::kurbo::{Line, Point, Rect, Size};
+#[cfg(feature = "tui")]
+use crate::piet::BigTextSize;
 use crate::piet::{
     Color, PietText, PietTextLayout, Text as _, TextAlignment, TextAttribute, TextLayout as _,
     TextLayoutBuilder as _,
@@ -46,6 +48,8 @@ pub struct TextLayout<T> {
     alignment: TextAlignment,
     links: Rc<[(Rect, usize)]>,
     text_is_rtl: bool,
+    #[cfg(feature = "tui")]
+    big_text: Option<BigTextSize>,
 }
 
 /// Metrics describing the layout text.
@@ -77,6 +81,8 @@ impl<T> TextLayout<T> {
             alignment: Default::default(),
             links: Rc::new([]),
             text_is_rtl: false,
+            #[cfg(feature = "tui")]
+            big_text: None,
         }
     }
 
@@ -136,6 +142,40 @@ impl<T> TextLayout<T> {
             self.alignment = alignment;
             self.layout = None;
         }
+    }
+
+    /// Set a terminal big-text size for this layout.
+    ///
+    /// Big text is a terminal-only display mode with discrete glyph
+    /// footprints. Font family and font size attributes are ignored while it
+    /// is enabled, and big text cannot be mixed inline with normal text.
+    ///
+    /// This method is available when the `tui` feature is enabled.
+    #[cfg(feature = "tui")]
+    pub fn set_big_text(&mut self, size: BigTextSize) {
+        if self.big_text != Some(size) {
+            self.big_text = Some(size);
+            self.layout = None;
+        }
+    }
+
+    /// Disable terminal big text for this layout.
+    ///
+    /// This method is available when the `tui` feature is enabled.
+    #[cfg(feature = "tui")]
+    pub fn clear_big_text(&mut self) {
+        if self.big_text.is_some() {
+            self.big_text = None;
+            self.layout = None;
+        }
+    }
+
+    /// Return the terminal big-text size for this layout, if any.
+    ///
+    /// This method is available when the `tui` feature is enabled.
+    #[cfg(feature = "tui")]
+    pub fn big_text(&self) -> Option<BigTextSize> {
+        self.big_text
     }
 
     /// Returns `true` if this layout's text appears to be right-to-left.
@@ -375,6 +415,11 @@ impl<T: TextStorage> TextLayout<T> {
                     .default_attribute(descriptor.weight)
                     .default_attribute(descriptor.style)
                     .default_attribute(TextAttribute::TextColor(color));
+                #[cfg(feature = "tui")]
+                let builder = match self.big_text {
+                    Some(size) => builder.big_text(size),
+                    None => builder,
+                };
                 let layout = text.add_attributes(builder, env).build().unwrap();
 
                 self.links = text
@@ -438,5 +483,37 @@ impl<T> std::fmt::Debug for TextLayout<T> {
 impl<T: TextStorage> Default for TextLayout<T> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(all(test, feature = "tui"))]
+mod tests {
+    use super::*;
+    use crate::piet::{ratatui_core, TuiConfig, TuiRenderContext};
+
+    fn text_factory() -> PietText {
+        let mut buffer =
+            ratatui_core::buffer::Buffer::empty(ratatui_core::layout::Rect::new(0, 0, 1, 1));
+        TuiRenderContext::new(&mut buffer, TuiConfig::with_cell_size(Size::new(8.0, 16.0)))
+            .text()
+            .clone()
+    }
+
+    #[test]
+    fn big_text_uses_terminal_glyph_footprint() {
+        let mut factory = text_factory();
+        let env = Env::with_default_i10n();
+        let mut layout = TextLayout::<String>::from_text("A");
+        layout.rebuild_if_needed(&mut factory, &env);
+        assert_eq!(layout.size(), Size::new(8.0, 16.0));
+
+        layout.set_big_text(BigTextSize::Quadrant);
+        assert!(layout.needs_rebuild());
+        layout.rebuild_if_needed(&mut factory, &env);
+        assert_eq!(layout.size(), Size::new(32.0, 64.0));
+
+        layout.clear_big_text();
+        layout.rebuild_if_needed(&mut factory, &env);
+        assert_eq!(layout.size(), Size::new(8.0, 16.0));
     }
 }
