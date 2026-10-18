@@ -27,7 +27,7 @@ impl WinHandler for QuitState {
 
     fn prepare_paint(&mut self) {}
 
-    fn paint(&mut self, piet: &mut piet_common::Piet, _: &Region) {
+    fn paint(&mut self, piet: &mut druid_shell::piet::Piet, _: &Region) {
         let rect = self.size.to_rect();
         piet.fill(rect, &BG_COLOR);
         piet.stroke(Line::new((10.0, 50.0), (90.0, 90.0)), &FG_COLOR, 1.0);

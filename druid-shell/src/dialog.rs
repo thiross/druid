@@ -34,6 +34,7 @@ pub struct FileInfo {
     feature = "wayland"
 )))]
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum FileDialogType {
     /// File open dialog.
     Open,

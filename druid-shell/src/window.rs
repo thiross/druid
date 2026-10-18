@@ -15,10 +15,10 @@ use crate::keyboard::KeyEvent;
 use crate::kurbo::{Insets, Point, Rect, Size};
 use crate::menu::Menu;
 use crate::mouse::{Cursor, CursorDesc, MouseEvent};
+use crate::piet::PietText;
 use crate::region::Region;
 use crate::scale::Scale;
 use crate::text::{Event, InputHandler};
-use piet_common::PietText;
 #[cfg(feature = "raw-win-handle")]
 use raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
 
@@ -593,7 +593,7 @@ pub trait WinHandler {
     /// Request the handler to paint the window contents.  `invalid` is the region in [display
     /// points](crate::Scale) that needs to be repainted; painting outside the invalid region will
     /// have no effect.
-    fn paint(&mut self, piet: &mut piet_common::Piet, invalid: &Region);
+    fn paint(&mut self, piet: &mut crate::piet::Piet, invalid: &Region);
 
     /// Called when the resources need to be rebuilt.
     ///

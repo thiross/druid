@@ -276,6 +276,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "tui"))]
     fn tall_paint() {
         use crate::{tests::harness::Harness, WidgetId};
 
@@ -322,6 +323,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "tui"))]
     fn wide_paint() {
         use crate::{tests::harness::Harness, WidgetId};
         let _id_1 = WidgetId::next();
@@ -375,6 +377,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "tui"))]
     fn into_png() {
         use crate::{
             tests::{harness::Harness, temp_dir_for_test},
@@ -464,6 +467,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "tui"))]
     fn image_clip_area() {
         use crate::{tests::harness::Harness, WidgetId};
         use std::iter;

@@ -20,6 +20,7 @@ cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
 [features]
 default = ["gtk"]
 gtk = ["druid-shell/gtk"]
+tui = ["druid-shell/tui"]
 image = ["druid-shell/image"]
 svg = ["usvg", "resvg", "tiny-skia"]
 x11 = ["druid-shell/x11"]
@@ -76,7 +77,6 @@ console_error_panic_hook = { version = "0.1.7" }
 [dev-dependencies]
 float-cmp = { version = "0.9.0", features = ["std"], default-features = false }
 tempfile = "3.23.0"
-piet-common = { git = "https://github.com/thiross/piet.git", branch = "tui", features = ["png"] }
 pulldown-cmark = { version = "0.8.0", default-features = false }
 test-log = { version = "0.2.19", features = ["trace"], default-features = false }
 # test-env-log needs it
@@ -90,6 +90,10 @@ name = "hello"
 # This actually enables scraping for all examples, not just `hello`.
 # However it is possible to add another [[example]] entry to disable it for a specific example.
 doc-scrape-examples = true
+
+[[example]]
+name = "tui"
+required-features = ["tui"]
 
 [[example]]
 name = "cursor"

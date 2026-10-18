@@ -4,8 +4,8 @@
 use std::any::Any;
 use std::time::Instant;
 
-use piet_common::kurbo::{Line, Size};
-use piet_common::{Color, FontFamily, Piet, RenderContext, Text, TextLayoutBuilder};
+use druid_shell::kurbo::{Line, Size};
+use druid_shell::piet::{Color, FontFamily, Piet, RenderContext, Text, TextLayoutBuilder};
 
 use druid_shell::{Application, KeyEvent, Region, WinHandler, WindowBuilder, WindowHandle};
 

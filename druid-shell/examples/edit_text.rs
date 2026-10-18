@@ -79,7 +79,7 @@ impl WinHandler for AppState {
         self.handle.invalidate();
     }
 
-    fn paint(&mut self, piet: &mut piet_common::Piet, _: &Region) {
+    fn paint(&mut self, piet: &mut druid_shell::piet::Piet, _: &Region) {
         let rect = self.size.to_rect();
         piet.fill(rect, &BG_COLOR);
         let doc = self.document.borrow();

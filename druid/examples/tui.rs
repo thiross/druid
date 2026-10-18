@@ -1,0 +1,61 @@
+// Copyright 2026 the Druid Authors
+// SPDX-License-Identifier: Apache-2.0
+
+//! A small Druid application running on the terminal backend.
+//!
+//! Run with:
+//! `cargo run -p druid --example tui --no-default-features --features tui`
+
+use druid::widget::{Button, Flex, Label, TextBox};
+use druid::{AppLauncher, Data, Lens, UnitPoint, WidgetExt, WindowDesc};
+
+#[derive(Clone, Data, Lens)]
+struct AppState {
+    name: String,
+    count: u64,
+}
+
+fn main() {
+    let window = WindowDesc::new(build_root())
+        .title("Druid TUI")
+        .window_size((640.0, 384.0));
+
+    let state = AppState {
+        name: "World".to_string(),
+        count: 0,
+    };
+
+    AppLauncher::with_window(window)
+        .launch(state)
+        .expect("failed to launch the TUI application");
+}
+
+fn build_root() -> impl druid::Widget<AppState> {
+    let greeting = Label::new(|data: &AppState, _: &druid::Env| {
+        if data.name.is_empty() {
+            "Hello!".to_string()
+        } else {
+            format!("Hello {}!", data.name)
+        }
+    });
+
+    let textbox = TextBox::new()
+        .with_placeholder("Enter a name")
+        .lens(AppState::name);
+
+    let count =
+        Label::new(|data: &AppState, _: &druid::Env| format!("Button presses: {}", data.count));
+
+    let button = Button::new("Press me").on_click(|_, data: &mut AppState, _| data.count += 1);
+
+    Flex::column()
+        .with_child(greeting)
+        .with_spacer(16.0)
+        .with_child(textbox)
+        .with_spacer(16.0)
+        .with_child(count)
+        .with_spacer(16.0)
+        .with_child(button)
+        .align_vertical(UnitPoint::CENTER)
+        .padding(24.0)
+}

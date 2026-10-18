@@ -24,6 +24,20 @@
 // This is overeager right now, see https://github.com/rust-lang/rust-clippy/issues/8494
 #![allow(clippy::iter_overeager_cloned)]
 
+#[cfg(all(
+    feature = "tui",
+    any(
+        feature = "native",
+        feature = "gtk",
+        feature = "x11",
+        feature = "wayland"
+    )
+))]
+compile_error!(
+    "the `tui` feature cannot be combined with native backends; \
+     build with `--no-default-features --features tui`"
+);
+
 // Rename `gtk_rs` back to `gtk`.
 // This allows us to use `gtk` as the feature name.
 // The `target_os` requirement is there to exclude anything `wasm` like.
@@ -35,7 +49,9 @@ extern crate gtk_rs as gtk;
 
 #[cfg(feature = "image")]
 pub use piet::image_crate as image;
+#[cfg(any(feature = "native", feature = "tui"))]
 pub use piet::kurbo;
+#[cfg(any(feature = "native", feature = "tui"))]
 pub use piet_common as piet;
 
 // Reexport the version of `raw_window_handle` we are using.

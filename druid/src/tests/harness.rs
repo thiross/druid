@@ -3,13 +3,17 @@
 
 //! Tools and infrastructure for testing widgets.
 
+#[cfg(not(feature = "tui"))]
 use std::path::Path;
+#[cfg(not(feature = "tui"))]
 use std::sync::Arc;
 
 use crate::app::PendingWindow;
 use crate::core::{CommandQueue, WidgetState};
 use crate::ext_event::ExtEventHost;
-use crate::piet::{BitmapTarget, Device, Error, ImageFormat, Piet};
+use crate::piet::{BitmapTarget, Device, Piet};
+#[cfg(not(feature = "tui"))]
+use crate::piet::{Error, ImageFormat};
 use crate::*;
 
 use crate::debug_state::DebugState;
@@ -58,6 +62,7 @@ pub struct TargetGuard<'a>(Option<BitmapTarget<'a>>);
 
 impl<'a> TargetGuard<'a> {
     /// Turns the TargetGuard into a array of pixels
+    #[cfg(not(feature = "tui"))]
     #[allow(dead_code)]
     pub fn into_raw(mut self) -> Arc<[u8]> {
         let mut raw_target = self.0.take().unwrap();
@@ -68,6 +73,7 @@ impl<'a> TargetGuard<'a> {
     }
 
     /// Saves the TargetGuard into a png
+    #[cfg(not(feature = "tui"))]
     #[allow(dead_code)]
     pub fn into_png<P: AsRef<Path>>(mut self, path: P) -> Result<(), Error> {
         let raw_target = self.0.take().unwrap();
@@ -133,8 +139,18 @@ impl<T: Data> Harness<'_, T> {
         let ext_host = ExtEventHost::default();
         let ext_handle = ext_host.make_sink();
         let mut device = Device::new().expect("harness failed to get device");
+
+        #[cfg(feature = "tui")]
+        let (target_width, target_height) = (
+            (window_size.width / 8.0).ceil().max(1.0) as usize,
+            (window_size.height / 16.0).ceil().max(1.0) as usize,
+        );
+        #[cfg(not(feature = "tui"))]
+        let (target_width, target_height) =
+            (window_size.width as usize, window_size.height as usize);
+
         let target = device
-            .bitmap_target(window_size.width as usize, window_size.height as usize, 1.0)
+            .bitmap_target(target_width, target_height, 1.0)
             .expect("bitmap_target");
         let mut target = TargetGuard(Some(target));
         {
@@ -352,6 +368,7 @@ impl<T> Drop for Harness<'_, T> {
     }
 }
 
+#[cfg(not(feature = "tui"))]
 impl Drop for TargetGuard<'_> {
     fn drop(&mut self) {
         // we need to call this to clean up the context
