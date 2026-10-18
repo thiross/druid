@@ -5,7 +5,6 @@
 
 use std::cmp::Ordering;
 use std::collections::VecDeque;
-use std::f64;
 use std::ops::Deref;
 use std::sync::Arc;
 
