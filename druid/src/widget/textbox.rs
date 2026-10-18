@@ -451,6 +451,7 @@ impl<T> TextBox<T> {
         self.cursor_timer = token;
     }
 
+    #[cfg_attr(feature = "tui", allow(dead_code))]
     fn should_draw_cursor(&self) -> bool {
         if cfg!(target_os = "macos") && self.text().can_read() {
             self.cursor_on && self.text().borrow().selection().is_caret()
@@ -744,6 +745,7 @@ impl<T: TextStorage + EditableText> Widget<T> for TextBox<T> {
         }
         let size = ctx.size();
         let background_color = env.get(theme::BACKGROUND_LIGHT);
+        #[cfg(not(feature = "tui"))]
         let cursor_color = env.get(theme::CURSOR_COLOR);
         let border_width = env.get(theme::TEXTBOX_BORDER_WIDTH);
         let textbox_insets = env.get(theme::TEXTBOX_INSETS);
@@ -765,7 +767,7 @@ impl<T: TextStorage + EditableText> Widget<T> for TextBox<T> {
         ctx.fill(clip_rect, &background_color);
 
         if !data.is_empty() {
-            self.inner.paint(ctx, data, env);
+            ctx.with_save(|ctx| self.inner.paint(ctx, data, env));
         } else {
             let text_width = self.placeholder_layout.layout_metrics().size.width;
             let extra_width = (size.width - text_width - textbox_insets.x_value()).max(0.);
@@ -785,8 +787,14 @@ impl<T: TextStorage + EditableText> Widget<T> for TextBox<T> {
             })
         }
 
-        // Paint the cursor if focused and there's no selection
-        if is_focused && self.should_draw_cursor() {
+        // Paint the cursor if focused and there's no selection. Terminal backends use the
+        // terminal's native cursor, which blinks on its own.
+        #[cfg(feature = "tui")]
+        let draw_cursor = is_focused;
+        #[cfg(not(feature = "tui"))]
+        let draw_cursor = is_focused && self.should_draw_cursor();
+
+        if draw_cursor {
             // if there's no data, we always draw the cursor based on
             // our alignment.
             let cursor_pos = self.text().borrow().selection().active;
@@ -797,23 +805,36 @@ impl<T: TextStorage + EditableText> Widget<T> for TextBox<T> {
 
             let padding_offset = Vec2::new(textbox_insets.x0, textbox_insets.y0);
 
-            let mut cursor = if data.is_empty() {
+            let cursor = if data.is_empty() {
                 cursor_line + padding_offset
             } else {
                 cursor_line + padding_offset - self.inner.offset()
             };
 
-            // Snap the cursor to the pixel grid so it stays sharp.
-            cursor.p0.x = cursor.p0.x.trunc() + 0.5;
-            cursor.p1.x = cursor.p0.x;
+            #[cfg(feature = "tui")]
+            {
+                let position = ctx.current_transform() * cursor.p0;
+                ctx.set_text_cursor(position);
+            }
 
-            ctx.with_save(|ctx| {
-                ctx.clip(clip_rect);
-                ctx.stroke(cursor, &cursor_color, 1.);
-            })
+            #[cfg(not(feature = "tui"))]
+            {
+                let mut cursor = cursor;
+                // Snap the cursor to the pixel grid so it stays sharp.
+                cursor.p0.x = cursor.p0.x.trunc() + 0.5;
+                cursor.p1.x = cursor.p0.x;
+
+                ctx.with_save(|ctx| {
+                    ctx.clip(clip_rect);
+                    ctx.stroke(cursor, &cursor_color, 1.);
+                })
+            }
         }
 
         // Paint the border
+        #[cfg(feature = "tui")]
+        crate::tui::paint_cell_border(ctx, size.to_rect(), border_color, background_color, true);
+        #[cfg(not(feature = "tui"))]
         ctx.stroke(clip_rect, &border_color, border_width);
     }
 

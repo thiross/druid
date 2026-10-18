@@ -595,6 +595,14 @@ pub trait WinHandler {
     /// have no effect.
     fn paint(&mut self, piet: &mut crate::piet::Piet, invalid: &Region);
 
+    /// Returns the text caret position in display points, if it should be visible.
+    ///
+    /// Terminal backends use this to place the terminal's native cursor. Other backends may
+    /// ignore it.
+    fn text_cursor_position(&self) -> Option<Point> {
+        None
+    }
+
     /// Called when the resources need to be rebuilt.
     ///
     /// Discussion: this function is mostly motivated by using

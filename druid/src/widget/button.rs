@@ -6,13 +6,18 @@
 use crate::debug_state::DebugState;
 use crate::widget::prelude::*;
 use crate::widget::{Click, ControllerHost, Label, LabelText};
-use crate::{theme, Affine, Data, Insets, LinearGradient, UnitPoint};
+use crate::{theme, Affine, Data, Insets};
+#[cfg(not(feature = "tui"))]
+use crate::{LinearGradient, UnitPoint};
 use tracing::{instrument, trace};
 
 // the minimum padding added to a button.
 // NOTE: these values are chosen to match the existing look of TextBox; these
 // should be reevaluated at some point.
+#[cfg(not(feature = "tui"))]
 const LABEL_INSETS: Insets = Insets::uniform_xy(8., 2.);
+#[cfg(feature = "tui")]
+const LABEL_INSETS: Insets = Insets::uniform_xy(8., 16.);
 
 /// A button with a text label.
 pub struct Button<T> {
@@ -166,6 +171,16 @@ impl<T: Data> Widget<T> for Button<T> {
             .inset(-stroke_width / 2.0)
             .to_rounded_rect(env.get(theme::BUTTON_BORDER_RADIUS));
 
+        #[cfg(feature = "tui")]
+        let bg_color = if ctx.is_disabled() {
+            env.get(theme::DISABLED_BUTTON_LIGHT)
+        } else if is_active {
+            env.get(theme::BUTTON_DARK)
+        } else {
+            env.get(theme::BUTTON_LIGHT)
+        };
+
+        #[cfg(not(feature = "tui"))]
         let bg_gradient = if ctx.is_disabled() {
             LinearGradient::new(
                 UnitPoint::TOP,
@@ -195,9 +210,15 @@ impl<T: Data> Widget<T> for Button<T> {
             env.get(theme::BORDER_DARK)
         };
 
-        ctx.stroke(rounded_rect, &border_color, stroke_width);
-
+        #[cfg(feature = "tui")]
+        ctx.fill(rounded_rect, &bg_color);
+        #[cfg(not(feature = "tui"))]
         ctx.fill(rounded_rect, &bg_gradient);
+
+        #[cfg(feature = "tui")]
+        crate::tui::paint_cell_border(ctx, size.to_rect(), border_color, bg_color, true);
+        #[cfg(not(feature = "tui"))]
+        ctx.stroke(rounded_rect, &border_color, stroke_width);
 
         let label_offset = (size.to_vec2() - self.label_size.to_vec2()) / 2.0;
 

@@ -182,6 +182,8 @@ mod sub_window;
 pub mod tests;
 pub mod text;
 pub mod theme;
+#[cfg(feature = "tui")]
+mod tui;
 pub mod widget;
 mod win_handler;
 mod window;

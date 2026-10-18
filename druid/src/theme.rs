@@ -111,6 +111,16 @@ pub const SCROLLBAR_EDGE_WIDTH: Key<f64> =
 /// scrollbar's primary axis.
 pub const SCROLLBAR_MIN_SIZE: Key<f64> = Key::new("org.linebender.theme.scrollbar_min_size");
 
+#[cfg(feature = "tui")]
+const DEFAULT_BORDERED_WIDGET_HEIGHT: f64 = 48.0;
+#[cfg(not(feature = "tui"))]
+const DEFAULT_BORDERED_WIDGET_HEIGHT: f64 = 24.0;
+
+#[cfg(feature = "tui")]
+const DEFAULT_TEXTBOX_INSETS: Insets = Insets::new(8.0, 16.0, 8.0, 16.0);
+#[cfg(not(feature = "tui"))]
+const DEFAULT_TEXTBOX_INSETS: Insets = Insets::new(4.0, 4.0, 4.0, 4.0);
+
 /// An initial theme.
 pub(crate) fn add_to_env(env: Env) -> Env {
     env.adding(WINDOW_BACKGROUND_COLOR, Color::rgb8(0x29, 0x29, 0x29))
@@ -145,10 +155,10 @@ pub(crate) fn add_to_env(env: Env) -> Env {
         .adding(TEXT_SIZE_LARGE, 24.0)
         .adding(BASIC_WIDGET_HEIGHT, 18.0)
         .adding(WIDE_WIDGET_WIDTH, 100.)
-        .adding(BORDERED_WIDGET_HEIGHT, 24.0)
+        .adding(BORDERED_WIDGET_HEIGHT, DEFAULT_BORDERED_WIDGET_HEIGHT)
         .adding(TEXTBOX_BORDER_RADIUS, 2.)
         .adding(TEXTBOX_BORDER_WIDTH, 1.)
-        .adding(TEXTBOX_INSETS, Insets::new(4.0, 4.0, 4.0, 4.0))
+        .adding(TEXTBOX_INSETS, DEFAULT_TEXTBOX_INSETS)
         .adding(SCROLLBAR_COLOR, Color::rgb8(0xff, 0xff, 0xff))
         .adding(SCROLLBAR_BORDER_COLOR, Color::rgb8(0x77, 0x77, 0x77))
         .adding(SCROLLBAR_MAX_OPACITY, 0.7)

@@ -473,7 +473,18 @@ impl<T: Data, W: Widget<T>> WidgetPod<T, W> {
 
         ctx.with_save(|ctx| {
             let layout_origin = self.layout_rect().origin().to_vec2();
-            ctx.transform(Affine::translate(layout_origin));
+            // Terminal rendering is cell-based. Keep layout coordinates as floats, but map
+            // each widget's paint origin onto the cell grid here.
+            #[cfg(feature = "tui")]
+            let paint_origin = {
+                let parent_origin = ctx.current_transform() * Point::ORIGIN;
+                let snapped = crate::tui::snap_point(parent_origin + layout_origin);
+                snapped - parent_origin
+            };
+            #[cfg(not(feature = "tui"))]
+            let paint_origin = layout_origin;
+
+            ctx.transform(Affine::translate(paint_origin));
             let mut visible = ctx.region().clone();
             visible.intersect_with(self.state.paint_rect());
             visible -= layout_origin;

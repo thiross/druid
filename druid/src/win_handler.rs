@@ -8,7 +8,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
-use crate::kurbo::Size;
+use crate::kurbo::{Point, Size};
 use crate::piet::Piet;
 use crate::shell::{
     text::InputHandler, Application, FileDialogToken, FileInfo, IdleToken, MouseEvent, Region,
@@ -45,6 +45,8 @@ pub struct DruidHandler<T> {
     pub(crate) app_state: AppState<T>,
     /// The id for the current window.
     window_id: WindowId,
+    /// The text caret position reported by the last paint.
+    text_cursor: Option<Point>,
 }
 
 /// The top level event handler.
@@ -332,9 +334,9 @@ impl<T: Data> InnerAppState<T> {
         self.do_update();
     }
 
-    fn paint(&mut self, window_id: WindowId, piet: &mut Piet, invalid: &Region) {
+    fn paint(&mut self, window_id: WindowId, piet: &mut Piet, invalid: &Region) -> Option<Point> {
         if let Some(win) = self.windows.get_mut(window_id) {
-            win.do_paint(
+            return win.do_paint(
                 piet,
                 invalid,
                 &mut self.command_queue,
@@ -342,6 +344,7 @@ impl<T: Data> InnerAppState<T> {
                 &self.env,
             );
         }
+        None
     }
 
     fn dispatch_cmd(&mut self, cmd: Command) -> Handled {
@@ -541,6 +544,7 @@ impl<T: Data> DruidHandler<T> {
         DruidHandler {
             app_state,
             window_id,
+            text_cursor: None,
         }
     }
 }
@@ -591,8 +595,13 @@ impl<T: Data> AppState<T> {
         self.inner.borrow_mut().prepare_paint(window_id);
     }
 
-    fn paint_window(&mut self, window_id: WindowId, piet: &mut Piet, invalid: &Region) {
-        self.inner.borrow_mut().paint(window_id, piet, invalid);
+    fn paint_window(
+        &mut self,
+        window_id: WindowId,
+        piet: &mut Piet,
+        invalid: &Region,
+    ) -> Option<Point> {
+        self.inner.borrow_mut().paint(window_id, piet, invalid)
     }
 
     fn idle(&mut self, token: IdleToken) {
@@ -946,7 +955,11 @@ impl<T: Data> WinHandler for DruidHandler<T> {
     }
 
     fn paint(&mut self, piet: &mut Piet, region: &Region) {
-        self.app_state.paint_window(self.window_id, piet, region);
+        self.text_cursor = self.app_state.paint_window(self.window_id, piet, region);
+    }
+
+    fn text_cursor_position(&self) -> Option<Point> {
+        self.text_cursor
     }
 
     fn size(&mut self, size: Size) {

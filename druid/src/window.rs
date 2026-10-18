@@ -429,7 +429,7 @@ impl<T: Data> Window<T> {
         queue: &mut CommandQueue,
         data: &T,
         env: &Env,
-    ) {
+    ) -> Option<Point> {
         if self.root.state().needs_layout {
             self.layout(queue, data, env);
         }
@@ -444,7 +444,7 @@ impl<T: Data> Window<T> {
                 },
             );
         }
-        self.paint(piet, invalid, queue, data, env);
+        self.paint(piet, invalid, queue, data, env)
     }
 
     fn layout(&mut self, queue: &mut CommandQueue, data: &T, env: &Env) {
@@ -499,7 +499,7 @@ impl<T: Data> Window<T> {
         queue: &mut CommandQueue,
         data: &T,
         env: &Env,
-    ) {
+    ) -> Option<Point> {
         let widget_state = WidgetState::new(self.root.id(), Some(self.size));
         let mut state = ContextState::new::<T>(
             queue,
@@ -536,9 +536,17 @@ impl<T: Data> Window<T> {
             });
         }
 
+        #[cfg(feature = "tui")]
+        let cursor = ctx.state.text_cursor.get();
+        #[cfg(not(feature = "tui"))]
+        let cursor = None;
+
+        drop(ctx);
+        drop(state);
         if self.wants_animation_frame() {
             self.handle.request_anim_frame();
         }
+        cursor
     }
 
     /// Get a best-effort representation of the entire widget tree for debug purposes.

@@ -96,4 +96,10 @@ pub use window::{
     WindowHandle, WindowLevel, WindowState,
 };
 
+/// The logical size of one terminal cell in the TUI backend.
+#[cfg(feature = "tui")]
+pub fn tui_cell_size() -> crate::kurbo::Size {
+    backend::cell_size()
+}
+
 pub use keyboard_types;

@@ -3,6 +3,8 @@
 
 //! The context types that are passed into various widget methods.
 
+#[cfg(feature = "tui")]
+use std::cell::Cell;
 use std::{
     any::{Any, TypeId},
     collections::{HashMap, VecDeque},
@@ -63,6 +65,8 @@ pub(crate) struct ContextState<'a> {
     pub(crate) root_app_data_type: TypeId,
     pub(crate) timers: &'a mut HashMap<TimerToken, WidgetId>,
     pub(crate) text_registrations: &'a mut Vec<TextFieldRegistration>,
+    #[cfg(feature = "tui")]
+    pub(crate) text_cursor: Cell<Option<Point>>,
 }
 
 /// A mutable context provided to event handling methods of widgets.
@@ -1070,6 +1074,12 @@ impl<'a, 'b> LayoutCtx<'a, 'b> {
 }
 
 impl PaintCtx<'_, '_, '_> {
+    /// Report the caret position to terminal backends.
+    #[cfg(feature = "tui")]
+    pub(crate) fn set_text_cursor(&mut self, position: Point) {
+        self.state.text_cursor.set(Some(position));
+    }
+
     /// The depth in the tree of the currently painting widget.
     ///
     /// This may be used in combination with [`paint_with_z_index`] in order
@@ -1177,6 +1187,8 @@ impl<'a> ContextState<'a> {
             focus_widget,
             timers,
             text_registrations,
+            #[cfg(feature = "tui")]
+            text_cursor: Cell::new(None),
             text: window.text(),
             root_app_data_type: TypeId::of::<T>(),
         }

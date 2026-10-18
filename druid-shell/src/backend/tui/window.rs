@@ -276,11 +276,27 @@ impl WindowState {
         self.redraw_requested.set(false);
         self.anim_requested.set(false);
         self.with_handler(|handler| handler.prepare_paint());
-        self.with_handler(|handler| {
+        let text_cursor = self.with_handler(|handler| {
             piet::render_with(frame.buffer_mut(), area, config(), |piet| {
                 handler.paint(piet, &invalid);
             });
+            handler.text_cursor_position()
         });
+
+        if let Some(Some(position)) = text_cursor {
+            let cfg = config();
+            let col = (position.x / cfg.cell_width()).round();
+            let row = (position.y / cfg.cell_height()).round();
+            let right = area.x.saturating_add(area.width);
+            let bottom = area.y.saturating_add(area.height);
+            if col >= 0.0 && row >= 0.0 {
+                let col = area.x.saturating_add(col as u16);
+                let row = area.y.saturating_add(row as u16);
+                if col < right && row < bottom {
+                    frame.set_cursor_position((col, row));
+                }
+            }
+        }
 
         self.invalid.borrow_mut().clear();
         self.redraw_requested
@@ -382,20 +398,18 @@ impl WindowState {
     fn handle_key_event(&self, event: TerminalKeyEvent) {
         match event.kind {
             KeyEventKind::Press | KeyEventKind::Repeat => {
+                let quit_key = event.modifiers.contains(KeyModifiers::CONTROL)
+                    && matches!(event.code, KeyCode::Char('c' | 'q'));
+                if quit_key {
+                    self.with_handler(|handler| handler.request_close());
+                    return;
+                }
+
                 let key_event =
                     terminal_key_event(event, KeyState::Down, event.kind == KeyEventKind::Repeat);
-                let handled = self
-                    .with_handler(|handler| {
-                        simulate_input(handler, self.active_text_input.get(), key_event)
-                    })
-                    .unwrap_or(false);
-
-                if !handled
-                    && event.modifiers.contains(KeyModifiers::CONTROL)
-                    && event.code == KeyCode::Char('c')
-                {
-                    self.with_handler(|handler| handler.request_close());
-                }
+                self.with_handler(|handler| {
+                    simulate_input(handler, self.active_text_input.get(), key_event)
+                });
             }
             KeyEventKind::Release => {
                 let key_event = terminal_key_event(event, KeyState::Up, false);
