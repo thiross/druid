@@ -8,7 +8,7 @@
 
 use druid::text::BigTextSize;
 use druid::widget::{Button, Flex, Label, TextBox};
-use druid::{AppLauncher, Data, Lens, UnitPoint, WidgetExt, WindowDesc};
+use druid::{theme, AppLauncher, Data, Lens, UnitPoint, WidgetExt, WindowDesc};
 
 #[derive(Clone, Data, Lens)]
 struct AppState {
@@ -63,4 +63,5 @@ fn build_root() -> impl druid::Widget<AppState> {
         .with_child(button)
         .align_vertical(UnitPoint::CENTER)
         .padding(24.0)
+        .border(theme::BORDER_LIGHT, 1.0)
 }

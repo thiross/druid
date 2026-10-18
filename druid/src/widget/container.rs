@@ -8,7 +8,7 @@ use crate::debug_state::DebugState;
 use crate::kurbo::RoundedRectRadii;
 use crate::widget::prelude::*;
 use crate::widget::Axis;
-use crate::{Color, Data, KeyOrValue, Point, WidgetPod};
+use crate::{Color, Data, KeyOrValue, Point, Size, WidgetPod};
 use tracing::{instrument, trace, trace_span};
 
 struct BorderStyle {
@@ -103,6 +103,9 @@ impl<T: Data> Container<T> {
     /// Arguments can be either concrete values, or a [`Key`] of the respective
     /// type.
     ///
+    /// On the terminal backend, any non-zero width paints a border that is one
+    /// terminal cell thick.
+    ///
     /// [`Key`]: crate::Key
     pub fn border(
         mut self,
@@ -117,6 +120,9 @@ impl<T: Data> Container<T> {
     ///
     /// Arguments can be either concrete values, or a [`Key`] of the respective
     /// type.
+    ///
+    /// On the terminal backend, any non-zero width paints a border that is one
+    /// terminal cell thick.
     ///
     /// [`Key`]: crate::Key
     pub fn set_border(
@@ -159,6 +165,26 @@ impl<T: Data> Container<T> {
     #[cfg(test)]
     pub(crate) fn border_is_some(&self) -> bool {
         self.border.is_some()
+    }
+
+    fn resolved_border_size(&self, env: &Env) -> Size {
+        let width = match &self.border {
+            Some(border) => border.width.resolve(env),
+            None => 0.0,
+        };
+
+        #[cfg(feature = "tui")]
+        {
+            if width > 0.0 {
+                crate::shell::tui_cell_size()
+            } else {
+                Size::ZERO
+            }
+        }
+        #[cfg(not(feature = "tui"))]
+        {
+            Size::new(width, width)
+        }
     }
 }
 
@@ -208,25 +234,22 @@ impl<T: Data> Widget<T> for Container<T> {
         bc.debug_check("Container");
 
         // Shrink constraints by border offset
-        let border_width = match &self.border {
-            Some(border) => border.width.resolve(env),
-            None => 0.0,
-        };
-        let child_bc = bc.shrink((2.0 * border_width, 2.0 * border_width));
+        let border_size = self.resolved_border_size(env);
+        let child_bc = bc.shrink(border_size * 2.0);
         let size = self.child.layout(ctx, &child_bc, data, env);
-        let origin = Point::new(border_width, border_width);
+        let origin = Point::new(border_size.width, border_size.height);
         self.child.set_origin(ctx, origin);
 
         let my_size = Size::new(
-            size.width + 2.0 * border_width,
-            size.height + 2.0 * border_width,
+            size.width + 2.0 * border_size.width,
+            size.height + 2.0 * border_size.height,
         );
 
         let my_insets = self.child.compute_parent_paint_insets(my_size);
         ctx.set_paint_insets(my_insets);
         let baseline_offset = self.child.baseline_offset();
         if baseline_offset > 0f64 {
-            ctx.set_baseline_offset(baseline_offset + border_width);
+            ctx.set_baseline_offset(baseline_offset + border_size.height);
         }
 
         trace!("Computed layout: size={}, insets={:?}", my_size, my_insets);
@@ -249,13 +272,26 @@ impl<T: Data> Widget<T> for Container<T> {
         }
 
         if let Some(border) = &self.border {
-            let border_width = border.width.resolve(env);
-            let border_rect = ctx
-                .size()
-                .to_rect()
-                .inset(border_width / -2.0)
-                .to_rounded_rect(corner_radius);
-            ctx.stroke(border_rect, &border.color.resolve(env), border_width);
+            #[cfg(feature = "tui")]
+            if border.width.resolve(env) > 0.0 {
+                crate::tui::paint_cell_border(
+                    ctx,
+                    ctx.size().to_rect(),
+                    border.color.resolve(env),
+                    Color::TRANSPARENT,
+                    corner_radius != Default::default(),
+                );
+            }
+            #[cfg(not(feature = "tui"))]
+            {
+                let border_width = border.width.resolve(env);
+                let border_rect = ctx
+                    .size()
+                    .to_rect()
+                    .inset(border_width / -2.0)
+                    .to_rounded_rect(corner_radius);
+                ctx.stroke(border_rect, &border.color.resolve(env), border_width);
+            }
         };
 
         self.child.paint(ctx, data, env);
@@ -288,16 +324,61 @@ impl<T: Data> Widget<T> for Container<T> {
         data: &T,
         env: &Env,
     ) -> f64 {
-        let container_width = match &self.border {
-            Some(border) => border.width.resolve(env),
-            None => 0.0,
-        };
-        let child_bc = bc.shrink((2.0 * container_width, 2.0 * container_width));
+        let border_size = self.resolved_border_size(env);
+        let child_bc = bc.shrink(border_size * 2.0);
         let child_size = self
             .child
             .widget_mut()
             .compute_max_intrinsic(axis, ctx, &child_bc, data, env);
-        let border_width_on_both_sides = container_width * 2.;
+        let border_width_on_both_sides = match axis {
+            Axis::Horizontal => border_size.width * 2.0,
+            Axis::Vertical => border_size.height * 2.0,
+        };
         child_size + border_width_on_both_sides
+    }
+}
+
+#[cfg(all(test, feature = "tui"))]
+mod tests {
+    use super::*;
+    use crate::tests::harness::Harness;
+    use crate::widget::{Label, SizedBox};
+
+    #[test]
+    fn tui_border_is_one_cell_thick() {
+        let widget = Container::new(SizedBox::new(Label::new("x")).width(24.0).height(16.0))
+            .border(Color::RED, 1.0);
+
+        Harness::create_with_render(
+            (),
+            widget,
+            Size::new(80.0, 48.0),
+            |harness| {
+                harness.send_initial_events();
+                harness.just_layout();
+                harness.paint();
+            },
+            |target| {
+                let buffer = target.into_tui_buffer();
+                let symbol = |x, y| buffer.cell((x, y)).unwrap().symbol();
+                let right = buffer.area.width - 1;
+                let bottom = buffer.area.height - 1;
+
+                assert_eq!(symbol(0, 0), "┌");
+                assert_eq!(symbol(right, 0), "┐");
+                assert_eq!(symbol(0, 1), "│");
+                assert_eq!(symbol(right, 1), "│");
+                assert_eq!(symbol(0, bottom), "└");
+                assert_eq!(symbol(right, bottom), "┘");
+                for x in 1..right {
+                    assert_eq!(symbol(x, 0), "─");
+                    assert_eq!(symbol(x, bottom), "─");
+                }
+                for y in 1..bottom {
+                    assert_eq!(symbol(0, y), "│");
+                    assert_eq!(symbol(right, y), "│");
+                }
+            },
+        );
     }
 }

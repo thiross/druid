@@ -79,6 +79,12 @@ impl<'a> TargetGuard<'a> {
         let raw_target = self.0.take().unwrap();
         raw_target.save_to_file(path)
     }
+
+    /// Consume the target and return its terminal buffer.
+    #[cfg(all(test, feature = "tui"))]
+    pub fn into_tui_buffer(mut self) -> crate::piet::ratatui_core::buffer::Buffer {
+        self.0.take().unwrap().into_buffer()
+    }
 }
 
 #[allow(missing_docs)]
@@ -138,6 +144,12 @@ impl<T: Data> Harness<'_, T> {
     ) {
         let ext_host = ExtEventHost::default();
         let ext_handle = ext_host.make_sink();
+        #[cfg(feature = "tui")]
+        let mut device = Device::with_config(crate::piet::TuiConfig::with_cell_size(
+            crate::shell::tui_cell_size(),
+        ))
+        .expect("harness failed to get device");
+        #[cfg(not(feature = "tui"))]
         let mut device = Device::new().expect("harness failed to get device");
 
         #[cfg(feature = "tui")]
