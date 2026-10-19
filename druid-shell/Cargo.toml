@@ -77,7 +77,7 @@ serde = ["piet-common/serde"]
 rust.unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }
 
 [dependencies]
-piet-common = { git = "https://github.com/thiross/piet.git", branch = "tui", optional = true, default-features = false }
+piet-common = { git = "https://github.com/thiross/piet.git", branch = "master", optional = true, default-features = false }
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"], optional = true }
 
 tracing = "0.1.43"
