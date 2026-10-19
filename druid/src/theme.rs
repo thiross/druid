@@ -116,6 +116,14 @@ const DEFAULT_BORDERED_WIDGET_HEIGHT: f64 = 48.0;
 #[cfg(not(feature = "tui"))]
 const DEFAULT_BORDERED_WIDGET_HEIGHT: f64 = 24.0;
 
+// Terminals already provide a background color, so painting one over the whole
+// window by default would hide the user's terminal theme. Applications can still
+// opt in by overriding `WINDOW_BACKGROUND_COLOR`.
+#[cfg(feature = "tui")]
+const DEFAULT_WINDOW_BACKGROUND_COLOR: Color = Color::TRANSPARENT;
+#[cfg(not(feature = "tui"))]
+const DEFAULT_WINDOW_BACKGROUND_COLOR: Color = Color::rgb8(0x29, 0x29, 0x29);
+
 #[cfg(feature = "tui")]
 const DEFAULT_TEXTBOX_INSETS: Insets = Insets::new(8.0, 16.0, 8.0, 16.0);
 #[cfg(not(feature = "tui"))]
@@ -123,7 +131,7 @@ const DEFAULT_TEXTBOX_INSETS: Insets = Insets::new(4.0, 4.0, 4.0, 4.0);
 
 /// An initial theme.
 pub(crate) fn add_to_env(env: Env) -> Env {
-    env.adding(WINDOW_BACKGROUND_COLOR, Color::rgb8(0x29, 0x29, 0x29))
+    env.adding(WINDOW_BACKGROUND_COLOR, DEFAULT_WINDOW_BACKGROUND_COLOR)
         .adding(TEXT_COLOR, Color::rgb8(0xf0, 0xf0, 0xea))
         .adding(DISABLED_TEXT_COLOR, Color::rgb8(0xa0, 0xa0, 0x9a))
         .adding(PLACEHOLDER_COLOR, Color::rgb8(0x80, 0x80, 0x80))
@@ -187,4 +195,16 @@ pub(crate) fn add_to_env(env: Env) -> Env {
                 .with_style(FontStyle::Italic)
                 .with_size(15.0),
         )
+}
+
+#[cfg(all(test, feature = "tui"))]
+mod tests {
+    use super::*;
+    use crate::Env;
+
+    #[test]
+    fn window_background_is_transparent_by_default() {
+        let env = Env::with_default_i10n();
+        assert_eq!(env.get(WINDOW_BACKGROUND_COLOR), Color::TRANSPARENT);
+    }
 }
