@@ -17,7 +17,7 @@ use tracing::{instrument, trace};
 #[cfg(not(feature = "tui"))]
 const LABEL_INSETS: Insets = Insets::uniform_xy(8., 2.);
 #[cfg(feature = "tui")]
-const LABEL_INSETS: Insets = Insets::uniform_xy(8., 16.);
+const LABEL_INSETS: Insets = Insets::uniform_xy(4., 16.);
 
 /// A button with a text label.
 pub struct Button<T> {
@@ -151,10 +151,13 @@ impl<T: Data> Widget<T> for Button<T> {
         let baseline = self.label.baseline_offset();
         ctx.set_baseline_offset(baseline + LABEL_INSETS.y1);
 
-        let button_size = bc.constrain(Size::new(
+        let button_size = Size::new(
             self.label_size.width + padding.width,
             (self.label_size.height + padding.height).max(min_height),
-        ));
+        );
+        #[cfg(feature = "tui")]
+        let button_size = crate::tui::snap_size_up(button_size);
+        let button_size = bc.constrain(button_size);
         trace!("Computed button size: {}", button_size);
         button_size
     }
@@ -234,5 +237,54 @@ impl<T: Data> Widget<T> for Button<T> {
             main_value: self.label.text().to_string(),
             ..Default::default()
         }
+    }
+}
+
+#[cfg(all(test, feature = "tui"))]
+mod tests {
+    use super::*;
+    use crate::tests::harness::Harness;
+    use crate::widget::{Container, Flex, Label, SizedBox};
+    use crate::Color;
+
+    #[test]
+    fn tui_single_char_button_keeps_its_right_border() {
+        // The widget after the button paints a background; the button's cells
+        // must not extend into its neighbor's layout slot.
+        let widget = Flex::row()
+            .with_child(Label::<()>::new("Y"))
+            .with_child(Button::<()>::new("X"))
+            .with_child(
+                Container::new(SizedBox::new(Label::new("Z")).width(24.0).height(48.0))
+                    .background(Color::BLUE),
+            );
+
+        Harness::create_with_render(
+            (),
+            widget,
+            Size::new(320.0, 160.0),
+            |harness| {
+                harness.send_initial_events();
+                harness.just_layout();
+                harness.paint();
+            },
+            |target| {
+                let buffer = target.into_tui_buffer();
+                let symbol = |x, y| buffer.cell((x, y)).unwrap().symbol().to_string();
+                let (x, y) = (0..buffer.area.width)
+                    .flat_map(|x| (0..buffer.area.height).map(move |y| (x, y)))
+                    .find(|&(x, y)| symbol(x, y) == "X")
+                    .expect("button label not found");
+
+                assert_eq!(symbol(x - 1, y), "│");
+                assert_eq!(symbol(x + 1, y), "│");
+                assert_eq!(symbol(x - 1, y - 1), "╭");
+                assert_eq!(symbol(x, y - 1), "─");
+                assert_eq!(symbol(x + 1, y - 1), "╮");
+                assert_eq!(symbol(x - 1, y + 1), "╰");
+                assert_eq!(symbol(x, y + 1), "─");
+                assert_eq!(symbol(x + 1, y + 1), "╯");
+            },
+        );
     }
 }

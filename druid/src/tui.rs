@@ -20,19 +20,13 @@ fn cell_size() -> Size {
     crate::shell::tui_cell_size()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn snaps_points_to_cell_grid() {
-        let cell = cell_size();
-        let point = Point::new(cell.width * 2.5, cell.height * 3.25);
-        assert_eq!(
-            snap_point(point),
-            Point::new(cell.width * 3.0, cell.height * 3.0)
-        );
-    }
+/// Round a size up to the next whole number of terminal cells.
+pub(crate) fn snap_size_up(size: Size) -> Size {
+    let cell = cell_size();
+    Size::new(
+        (size.width / cell.width).ceil() * cell.width,
+        (size.height / cell.height).ceil() * cell.height,
+    )
 }
 
 /// Paint a one-cell border using box-drawing glyphs.
@@ -122,5 +116,30 @@ pub(crate) fn paint_cell_border(
             .set_cell(left, row, "│", color, background_color);
         ctx.render_ctx
             .set_cell(right, row, "│", color, background_color);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snaps_points_to_cell_grid() {
+        let cell = cell_size();
+        let point = Point::new(cell.width * 2.5, cell.height * 3.25);
+        assert_eq!(
+            snap_point(point),
+            Point::new(cell.width * 3.0, cell.height * 3.0)
+        );
+    }
+
+    #[test]
+    fn snaps_sizes_up_to_cell_grid() {
+        let cell = cell_size();
+        let size = Size::new(cell.width * 2.5, cell.height * 1.25);
+        assert_eq!(
+            snap_size_up(size),
+            Size::new(cell.width * 3.0, cell.height * 2.0)
+        );
     }
 }
