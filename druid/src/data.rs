@@ -511,7 +511,7 @@ impl Data for kurbo::QuadBez {
 
 impl Data for piet::Color {
     fn same(&self, other: &Self) -> bool {
-        self.as_rgba_u32().same(&other.as_rgba_u32())
+        self == other
     }
 }
 
@@ -648,5 +648,17 @@ mod test {
         // although these are different, the compiler will notice that the string "test" is common,
         // intern it, and reuse it for all "text" `&'static str`s.
         assert!(Data::same(&first, &same));
+    }
+
+    #[test]
+    fn color_data_distinguishes_palette_colors() {
+        use crate::piet::{AnsiColor, Color};
+
+        let indexed = Color::ansi(AnsiColor::Red);
+        let rgb = Color::rgb8(0x80, 0, 0);
+
+        assert!(indexed.same(&Color::ansi(AnsiColor::Red)));
+        assert!(rgb.same(&Color::rgb8(0x80, 0, 0)));
+        assert!(!indexed.same(&rgb));
     }
 }
