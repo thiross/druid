@@ -784,19 +784,7 @@ impl<T: TextStorage + EditableText> EditSession<T> {
     }
 
     fn word_for_pos(&self, pos: usize) -> Range<usize> {
-        let layout = match self.layout.layout() {
-            Some(layout) => layout,
-            None => return pos..pos,
-        };
-
-        let line_n = layout.hit_test_text_position(pos).line;
-        let lm = layout.line_metric(line_n).unwrap();
-        let text = layout.line_text(line_n).unwrap();
-        let rel_pos = pos - lm.start_offset;
-        let mut range = text::movement::word_range_for_pos(text, rel_pos);
-        range.start += lm.start_offset;
-        range.end += lm.start_offset;
-        range
+        text::movement::word_range_at(&self.layout, pos)
     }
 
     fn update(&mut self, ctx: &mut UpdateCtx, new_data: &T, env: &Env) {

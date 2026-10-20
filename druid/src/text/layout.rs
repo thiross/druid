@@ -302,6 +302,19 @@ impl<T: TextStorage> TextLayout<T> {
             .unwrap_or_default()
     }
 
+    /// Return the origin at which this layout's glyphs will actually be drawn.
+    ///
+    /// Most backends return `requested` unchanged. Terminal backends snap the
+    /// origin to their cell grid. Callers should use
+    /// `layout.layout_origin(requested) - requested` to align selection
+    /// rectangles and hit-test coordinates with the drawn glyphs.
+    pub fn layout_origin(&self, requested: Point) -> Point {
+        self.layout
+            .as_ref()
+            .map(|layout| layout.layout_origin(requested))
+            .unwrap_or(requested)
+    }
+
     /// Return a line suitable for underlining a range of text.
     ///
     /// This is really only intended to be used to indicate the composition

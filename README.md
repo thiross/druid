@@ -106,6 +106,17 @@ Alternatively, there is an X11 backend available, although it is currently
 [missing quite a few features](https://github.com/linebender/druid/issues?q=is%3Aopen+is%3Aissue+label%3Ashell%2Fx11+label%3Amissing).
 You can try it out with `--features=x11`.
 
+#### Terminal
+
+The experimental terminal backend can be used without a GUI toolkit:
+
+```sh
+cargo run -p druid --example tui --no-default-features --features tui
+```
+
+See [TUI and selectable text](docs/src/10_tui_and_selectable_text.md) for terminal
+text origins and the `SelectableLabel` widget.
+
 ## Goals
 
 Druid's goal was to make it easy to write and deploy high quality desktop

@@ -153,11 +153,51 @@ pub fn movement<T: EditableText + TextStorage>(
 /// This uses Unicode word boundaries, as defined in [UAX#29].
 ///
 /// [UAX#29]: http://www.unicode.org/reports/tr29/
-pub(crate) fn word_range_for_pos(text: &str, pos: usize) -> Range<usize> {
+pub fn word_range_for_pos(text: &str, pos: usize) -> Range<usize> {
     text.split_word_bound_indices()
         .map(|(ix, word)| ix..(ix + word.len()))
         .find(|range| range.contains(&pos))
         .unwrap_or(pos..pos)
+}
+
+/// Return the word range containing `pos` on the laid-out visual line.
+///
+/// Soft-wrapped lines are treated as separate lines, while the returned
+/// offsets are relative to the complete text.
+pub fn word_range_at<T: TextStorage>(layout: &TextLayout<T>, pos: usize) -> Range<usize> {
+    let Some(piet_layout) = layout.layout() else {
+        return pos..pos;
+    };
+    let Some(text) = layout.text() else {
+        return pos..pos;
+    };
+
+    let pos = pos.min(text.as_str().len());
+    let line = piet_layout.hit_test_text_position(pos).line;
+    let Some(line_metrics) = piet_layout.line_metric(line) else {
+        return pos..pos;
+    };
+    let Some(line_text) = piet_layout.line_text(line) else {
+        return pos..pos;
+    };
+
+    let relative_pos = pos.saturating_sub(line_metrics.start_offset);
+    let range = word_range_for_pos(line_text, relative_pos);
+    (line_metrics.start_offset + range.start)..(line_metrics.start_offset + range.end)
+}
+
+/// Return the logical (hard line break delimited) line containing `pos`.
+pub fn logical_line_range(text: &str, pos: usize) -> Range<usize> {
+    let mut pos = pos.min(text.len());
+    while pos > 0 && !text.is_char_boundary(pos) {
+        pos -= 1;
+    }
+
+    let start = text[..pos].rfind('\n').map_or(0, |index| index + 1);
+    let end = text[pos..]
+        .find('\n')
+        .map_or(text.len(), |index| pos + index);
+    start..end
 }
 
 #[cfg(test)]

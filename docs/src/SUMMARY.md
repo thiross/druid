@@ -7,5 +7,6 @@
 - [Env](./06_env.md)
 - [Resolution independence](./07_resolution_independence.md)
 - [Widgets in depth](./08_widgets_in_depth.md)
+- [TUI and selectable text](./10_tui_and_selectable_text.md)
 ---
 - [More information](./09_more_information.md)

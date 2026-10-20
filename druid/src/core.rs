@@ -10,7 +10,7 @@ use crate::bloom::Bloom;
 use crate::command::sys::{CLOSE_WINDOW, SUB_WINDOW_HOST_TO_PARENT, SUB_WINDOW_PARENT_TO_HOST};
 use crate::commands::SCROLL_TO_VIEW;
 use crate::contexts::{ChangeCtx, ContextState};
-use crate::kurbo::{Affine, Insets, Point, Rect, Shape, Size};
+use crate::kurbo::{Affine, Insets, Point, Rect, Shape, Size, Vec2};
 use crate::sub_window::SubWindowUpdate;
 use crate::{
     ArcStr, BoxConstraints, Color, Command, Cursor, Data, Env, Event, EventCtx, InternalEvent,
@@ -370,7 +370,7 @@ impl<T, W: Widget<T>> WidgetPod<T, W> {
         data: &T,
         env: &Env,
     ) -> bool {
-        let rect = self.layout_rect();
+        let rect = Rect::from_origin_size(self.state.paint_origin().to_point(), self.state.size);
         let had_hot = self.state.is_hot;
         self.state.is_hot = match mouse_pos {
             Some(pos) => rect.winding(pos) != 0,
@@ -640,7 +640,7 @@ impl<T: Data, W: Widget<T>> WidgetPod<T, W> {
             return;
         }
         let had_active = self.state.has_active;
-        let rect = self.layout_rect();
+        let paint_origin = self.state.paint_origin();
 
         // If we need to replace either the event or its data.
         let mut modified_event = None;
@@ -714,7 +714,7 @@ impl<T: Data, W: Widget<T>> WidgetPod<T, W> {
                 );
                 if had_active || self.state.is_hot {
                     let mut mouse_event = mouse_event.clone();
-                    mouse_event.pos -= rect.origin().to_vec2();
+                    mouse_event.pos -= paint_origin;
                     modified_event = Some(Event::MouseDown(mouse_event));
                     true
                 } else {
@@ -734,7 +734,7 @@ impl<T: Data, W: Widget<T>> WidgetPod<T, W> {
                 );
                 if had_active || self.state.is_hot {
                     let mut mouse_event = mouse_event.clone();
-                    mouse_event.pos -= rect.origin().to_vec2();
+                    mouse_event.pos -= paint_origin;
                     modified_event = Some(Event::MouseUp(mouse_event));
                     true
                 } else {
@@ -757,7 +757,7 @@ impl<T: Data, W: Widget<T>> WidgetPod<T, W> {
                 // e.g. drag functionality where the widget wants to follow the mouse.
                 if had_active || self.state.is_hot || hot_changed {
                     let mut mouse_event = mouse_event.clone();
-                    mouse_event.pos -= rect.origin().to_vec2();
+                    mouse_event.pos -= paint_origin;
                     modified_event = Some(Event::MouseMove(mouse_event));
                     true
                 } else {
@@ -777,7 +777,7 @@ impl<T: Data, W: Widget<T>> WidgetPod<T, W> {
                 );
                 if had_active || self.state.is_hot {
                     let mut mouse_event = mouse_event.clone();
-                    mouse_event.pos -= rect.origin().to_vec2();
+                    mouse_event.pos -= paint_origin;
                     modified_event = Some(Event::Wheel(mouse_event));
                     true
                 } else {
@@ -1355,6 +1355,21 @@ impl WidgetState {
 
     pub(crate) fn window_origin(&self) -> Point {
         self.parent_window_origin + self.origin.to_vec2()
+    }
+
+    /// The origin used to paint and route pointer events for this widget.
+    ///
+    /// Terminal layouts keep their fractional layout coordinates, but paint
+    /// and pointer input must agree on the cell-aligned origin.
+    pub(crate) fn paint_origin(&self) -> Vec2 {
+        #[cfg(feature = "tui")]
+        {
+            crate::tui::snap_point(Point::new(self.origin.x, self.origin.y)).to_vec2()
+        }
+        #[cfg(not(feature = "tui"))]
+        {
+            self.origin.to_vec2()
+        }
     }
 }
 

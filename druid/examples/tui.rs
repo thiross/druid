@@ -6,14 +6,15 @@
 //! Run with:
 //! `cargo run -p druid --example tui --no-default-features --features tui`
 
-use druid::text::BigTextSize;
-use druid::widget::{Button, Flex, Label, TextBox};
+use druid::text::{BigTextSize, RichText};
+use druid::widget::{Button, Flex, Label, SelectableLabel, TextBox};
 use druid::{theme, AppLauncher, Data, Lens, UnitPoint, WidgetExt, WindowDesc};
 
 #[derive(Clone, Data, Lens)]
 struct AppState {
     name: String,
     count: u64,
+    note: RichText,
 }
 
 fn main() {
@@ -24,6 +25,7 @@ fn main() {
     let state = AppState {
         name: "World".to_string(),
         count: 0,
+        note: RichText::new("This read-only text can be selected and copied.".into()),
     };
 
     AppLauncher::with_window(window)
@@ -48,6 +50,7 @@ fn build_root() -> impl druid::Widget<AppState> {
 
     let count =
         Label::new(|data: &AppState, _: &druid::Env| format!("Button presses: {}", data.count));
+    let selectable = SelectableLabel::new().lens(AppState::note);
 
     let button = Button::new("Press me").on_click(|_, data: &mut AppState, _| data.count += 1);
 
@@ -59,6 +62,8 @@ fn build_root() -> impl druid::Widget<AppState> {
         .with_child(textbox)
         .with_spacer(16.0)
         .with_child(count)
+        .with_spacer(16.0)
+        .with_child(selectable)
         .with_spacer(16.0)
         .with_child(button)
         .align_vertical(UnitPoint::CENTER)
