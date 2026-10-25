@@ -128,7 +128,7 @@ impl<T: Data> Window<T> {
 
     /// On macos we need to update the global application menu to be the menu
     /// for the current window.
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", not(feature = "tui")))]
     pub(crate) fn macos_update_app_menu(&mut self, data: &T, env: &Env) {
         if let Some(menu) = self.menu.as_mut() {
             self.handle.set_menu(menu.refresh(data, env));

@@ -9,5 +9,5 @@
 ))]
 pub mod linux;
 
-#[cfg(any(doc, target_os = "macos"))]
+#[cfg(all(any(doc, target_os = "macos"), not(feature = "tui")))]
 pub mod mac;

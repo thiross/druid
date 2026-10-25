@@ -468,11 +468,11 @@ impl<T: Data> InnerAppState<T> {
                 self.ime_focus_change = Some(f);
             }
 
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(any(not(target_os = "macos"), feature = "tui"))]
             window.update_menu(&self.data, &self.env);
         }
 
-        #[cfg(target_os = "macos")]
+        #[cfg(all(target_os = "macos", not(feature = "tui")))]
         {
             use druid_shell::platform::mac::ApplicationExt as _;
 
@@ -531,7 +531,7 @@ impl<T: Data> InnerAppState<T> {
                 self.menu_window = Some(window_id);
             }
 
-            #[cfg(target_os = "macos")]
+            #[cfg(all(target_os = "macos", not(feature = "tui")))]
             win.macos_update_app_menu(&self.data, &self.env)
         }
     }
@@ -666,9 +666,9 @@ impl<T: Data> AppState<T> {
         match cmd.target() {
             // these are handled the same no matter where they come from
             _ if cmd.is(sys_cmd::QUIT_APP) => self.quit(),
-            #[cfg(target_os = "macos")]
+            #[cfg(all(target_os = "macos", not(feature = "tui")))]
             _ if cmd.is(sys_cmd::HIDE_APPLICATION) => self.hide_app(),
-            #[cfg(target_os = "macos")]
+            #[cfg(all(target_os = "macos", not(feature = "tui")))]
             _ if cmd.is(sys_cmd::HIDE_OTHERS) => self.hide_others(),
             _ if cmd.is(sys_cmd::NEW_WINDOW) => {
                 if let Err(e) = self.new_window(cmd) {
@@ -891,13 +891,13 @@ impl<T: Data> AppState<T> {
         self.inner.borrow().app.quit()
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", not(feature = "tui")))]
     fn hide_app(&self) {
         use druid_shell::platform::mac::ApplicationExt as _;
         self.inner.borrow().app.hide()
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", not(feature = "tui")))]
     fn hide_others(&mut self) {
         use druid_shell::platform::mac::ApplicationExt as _;
         self.inner.borrow().app.hide_others();
