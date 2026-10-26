@@ -27,6 +27,7 @@ You can find its changes [documented below](#083---2023-02-28).
 
 - `syn` feature `extra-traits` is now always enabled. ([#2375] by [@AtomicGamer9523])
 - Title bar color was opposite of the system theme on Windows. ([#2378] by [@Insprill])
+- TextBox selection scrolling now accounts for internal padding. ([@thiross])
 
 ### Visual
 

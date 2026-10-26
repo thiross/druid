@@ -462,21 +462,22 @@ impl<T> TextBox<T> {
 }
 
 impl<T: TextStorage + EditableText> TextBox<T> {
-    fn rect_for_selection_end(&self) -> Rect {
+    fn rect_for_selection_end(&self, env: &Env) -> Rect {
         let text = self.text().borrow();
         let layout = text.layout.layout().unwrap();
+        let textbox_insets = env.get(theme::TEXTBOX_INSETS);
 
         let hit = layout.hit_test_text_position(text.selection().active);
         let line = layout.line_metric(hit.line).unwrap();
-        let y0 = line.y_offset;
-        let y1 = y0 + line.height;
-        let x = hit.point.x;
+        let y0 = line.y_offset + textbox_insets.y0;
+        let y1 = y0 + line.height + textbox_insets.y1;
+        let x = hit.point.x + textbox_insets.x0;
 
         Rect::new(x, y0, x, y1)
     }
 
-    fn scroll_to_selection_end<C: ChangeCtx>(&mut self, ctx: &mut C) {
-        let rect = self.rect_for_selection_end();
+    fn scroll_to_selection_end<C: ChangeCtx>(&mut self, ctx: &mut C, env: &Env) {
+        let rect = self.rect_for_selection_end(env);
         let view_rect = self.inner.viewport_rect();
         let is_visible =
             view_rect.contains(rect.origin()) && view_rect.contains(Point::new(rect.x1, rect.y1));
@@ -526,7 +527,7 @@ impl<T: TextStorage + EditableText> Widget<T> for TextBox<T> {
                         ctx.request_layout();
                         self.scroll_to_selection_after_layout = true;
                     } else {
-                        self.scroll_to_selection_end(ctx);
+                        self.scroll_to_selection_end(ctx, env);
                     }
                     ctx.set_handled();
                     ctx.request_paint();
@@ -725,7 +726,7 @@ impl<T: TextStorage + EditableText> Widget<T> for TextBox<T> {
             + textbox_insets.y1;
         ctx.set_baseline_offset(baseline_off);
         if self.scroll_to_selection_after_layout {
-            self.scroll_to_selection_end(ctx);
+            self.scroll_to_selection_end(ctx, env);
             self.scroll_to_selection_after_layout = false;
         }
 
@@ -859,5 +860,97 @@ fn x_offset_for_extra_width(alignment: TextAlignment, extra_width: f64) -> f64 {
         TextAlignment::Start | TextAlignment::Justified => 0.0,
         TextAlignment::End => extra_width,
         TextAlignment::Center => extra_width / 2.0,
+    }
+}
+
+#[cfg(all(test, feature = "tui"))]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+    use crate::tests::harness::Harness;
+    use crate::WidgetPod;
+
+    struct SelectionScrollProbe {
+        child: WidgetPod<String, TextBox<String>>,
+        offsets: Arc<Mutex<Vec<Vec2>>>,
+    }
+
+    impl Widget<String> for SelectionScrollProbe {
+        fn event(&mut self, ctx: &mut EventCtx, event: &Event, data: &mut String, env: &Env) {
+            if matches!(event, Event::WindowConnected) {
+                let end = data.len();
+                let textbox = self.child.widget_mut();
+                let _ = textbox
+                    .text_mut()
+                    .borrow_mut()
+                    .set_selection(Selection::new(end, end));
+                textbox.scroll_to_selection_after_layout = true;
+            }
+            self.child.event(ctx, event, data, env);
+        }
+
+        fn lifecycle(
+            &mut self,
+            ctx: &mut LifeCycleCtx,
+            event: &LifeCycle,
+            data: &String,
+            env: &Env,
+        ) {
+            self.child.lifecycle(ctx, event, data, env);
+        }
+
+        fn update(&mut self, ctx: &mut UpdateCtx, _old_data: &String, data: &String, env: &Env) {
+            self.child.update(ctx, data, env);
+        }
+
+        fn layout(
+            &mut self,
+            ctx: &mut LayoutCtx,
+            bc: &BoxConstraints,
+            data: &String,
+            env: &Env,
+        ) -> Size {
+            let size = self.child.layout(ctx, bc, data, env);
+            self.child.set_origin(ctx, Point::ORIGIN);
+            self.offsets
+                .lock()
+                .unwrap()
+                .push(self.child.widget().inner.offset());
+            size
+        }
+
+        fn paint(&mut self, ctx: &mut PaintCtx, data: &String, env: &Env) {
+            self.child.paint(ctx, data, env);
+        }
+    }
+
+    #[test]
+    fn multiline_textbox_scrolls_selection_past_bottom_padding() {
+        let text = (1..=10)
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let offsets = Arc::new(Mutex::new(Vec::new()));
+        let root = SelectionScrollProbe {
+            child: WidgetPod::new(TextBox::multiline()),
+            offsets: Arc::clone(&offsets),
+        };
+
+        Harness::create_with_render(
+            text,
+            root,
+            Size::new(320.0, 160.0),
+            |harness| {
+                harness.send_initial_events();
+                harness.just_layout();
+            },
+            |_| {},
+        );
+
+        assert_eq!(
+            offsets.lock().unwrap().last().copied(),
+            Some(Vec2::new(0.0, 32.0))
+        );
     }
 }
