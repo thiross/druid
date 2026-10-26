@@ -33,6 +33,9 @@ You can find its changes [documented below](#083---2023-02-28).
 
 ### Docs
 
+- Clarified that keyboard focus targets a specific `WidgetPod`, including the
+  distinction between focusing a wrapper and a wrapped text input. ([@thiross])
+
 ### Examples
 
 ### Maintenance

@@ -46,8 +46,18 @@ use crate::widget::{Axis, WidgetWrapper};
 /// }
 /// ```
 ///
+/// [`ControllerHost`] does not introduce an additional [`WidgetPod`], so the
+/// request above focuses the wrapped `TextBox` itself. A controller placed
+/// outside a wrapper that owns its own child `WidgetPod`, such as
+/// [`EnvScope`], instead focuses that wrapper. Attach the controller inside the
+/// wrapper when the wrapped widget needs focus; in particular, text input is
+/// activated only when the focused `WidgetPod` is the `TextBox` that registered
+/// it.
+///
 /// [`TextBox`]: super::TextBox
 /// [`WidgetExt::controller`]: super::WidgetExt::controller
+/// [`EnvScope`]: super::EnvScope
+/// [`WidgetPod`]: crate::WidgetPod
 pub trait Controller<T, W: Widget<T>> {
     /// Analogous to [`Widget::event`].
     fn event(&mut self, child: &mut W, ctx: &mut EventCtx, event: &Event, data: &mut T, env: &Env) {

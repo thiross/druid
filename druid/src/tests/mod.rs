@@ -348,6 +348,64 @@ fn focus_changed() {
     })
 }
 
+#[cfg(test)]
+struct FocusOnConnect;
+
+#[cfg(test)]
+impl<T, W: Widget<T>> Controller<T, W> for FocusOnConnect {
+    fn event(&mut self, child: &mut W, ctx: &mut EventCtx, event: &Event, data: &mut T, env: &Env) {
+        if let Event::WindowConnected = event {
+            ctx.request_focus();
+        }
+        child.event(ctx, event, data, env);
+    }
+}
+
+#[test]
+fn focus_controller_targets_its_widget_pod() {
+    let textbox_id = WidgetId::next();
+    let widget = TextBox::new()
+        .with_id(textbox_id)
+        .controller(FocusOnConnect);
+
+    Harness::create_simple(String::new(), widget, |harness| {
+        harness.send_initial_events();
+
+        assert_eq!(harness.window().focus, Some(textbox_id));
+        assert!(harness
+            .window()
+            .ime_handlers
+            .iter()
+            .any(|(_, registration)| registration.widget_id == textbox_id));
+        assert!(matches!(harness.window().ime_focus_change, Some(Some(_))));
+    });
+}
+
+#[test]
+fn focus_controller_outside_env_scope_targets_the_wrapper() {
+    let textbox_id = WidgetId::next();
+    let wrapper_id = WidgetId::next();
+    let widget = TextBox::new()
+        .with_id(textbox_id)
+        .env_scope(|_, _| {})
+        .with_id(wrapper_id)
+        .controller(FocusOnConnect);
+
+    Harness::create_simple(String::new(), widget, |harness| {
+        harness.send_initial_events();
+
+        assert_eq!(harness.window().focus, Some(wrapper_id));
+        assert!(harness.get_state(wrapper_id).has_focus);
+        assert!(!harness.get_state(textbox_id).has_focus);
+        assert!(harness
+            .window()
+            .ime_handlers
+            .iter()
+            .any(|(_, registration)| registration.widget_id == textbox_id));
+        assert_eq!(harness.window().ime_focus_change, None);
+    });
+}
+
 #[test]
 fn simple_disable() {
     const CHANGE_DISABLED: Selector<bool> = Selector::new("druid-tests.change-disabled");

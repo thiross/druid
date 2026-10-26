@@ -818,9 +818,18 @@ impl EventCtx<'_, '_> {
     /// from different widgets during a single event cycle means that the last
     /// widget that requests focus will override the previous requests.
     ///
+    /// Focus is associated with the [`WidgetPod`] whose event context this is.
+    /// Some wrappers, such as [`EnvScope`], own a child `WidgetPod`; calling this
+    /// method from a controller outside such a wrapper focuses the wrapper, not
+    /// the wrapped widget. In particular, this does not activate text input for a
+    /// `TextBox` in the wrapper's subtree. Attach the focus controller inside the
+    /// wrapper when the wrapped widget itself should receive focus.
+    ///
     /// See [`is_focused`] for more information about focus.
     ///
     /// [`is_focused`]: struct.EventCtx.html#method.is_focused
+    /// [`WidgetPod`]: crate::WidgetPod
+    /// [`EnvScope`]: crate::widget::EnvScope
     pub fn request_focus(&mut self) {
         trace!("request_focus");
         // We need to send the request even if we're currently focused,
