@@ -196,6 +196,14 @@ impl AttributesAdder<'_> {
         self
     }
 
+    /// Add a background color attribute.
+    ///
+    /// `None` clears a background inherited from an outer range.
+    pub fn background_color(&mut self, color: impl Into<KeyOrValue<Option<Color>>>) -> &mut Self {
+        self.add_attr(Attribute::background_color(color));
+        self
+    }
+
     /// Add a font family attribute.
     pub fn font_family(&mut self, family: FontFamily) -> &mut Self {
         self.add_attr(Attribute::font_family(family));
@@ -240,5 +248,29 @@ impl AttributesAdder<'_> {
             .links
             .push(Link::new(self.range.clone(), command.into()));
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::piet::TextAttribute as PietAttr;
+
+    #[test]
+    fn background_color_is_forwarded_to_piet() {
+        let color = Color::rgb8(4, 5, 6);
+        let mut builder = RichTextBuilder::new();
+        builder.push("a").background_color(Some(color));
+        builder.push("b").background_color(None);
+        let text = builder.build();
+
+        let attrs = text.attrs.to_piet_attrs(&Env::empty());
+        assert!(attrs.iter().any(|(range, attr)| {
+            range == &(0..1)
+                && matches!(attr, PietAttr::BackgroundColor(Some(actual)) if *actual == color)
+        }));
+        assert!(attrs.iter().any(|(range, attr)| {
+            range == &(1..2) && matches!(attr, PietAttr::BackgroundColor(None))
+        }));
     }
 }

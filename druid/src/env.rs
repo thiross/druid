@@ -413,20 +413,21 @@ impl Value {
 
     fn is_same_type(&self, other: &Value) -> bool {
         use Value::*;
-        matches!(
-            (self, other),
+        match (self, other) {
             (Point(_), Point(_))
-                | (Size(_), Size(_))
-                | (Rect(_), Rect(_))
-                | (Insets(_), Insets(_))
-                | (Color(_), Color(_))
-                | (Float(_), Float(_))
-                | (Bool(_), Bool(_))
-                | (UnsignedInt(_), UnsignedInt(_))
-                | (String(_), String(_))
-                | (Font(_), Font(_))
-                | (RoundedRectRadii(_), RoundedRectRadii(_))
-        )
+            | (Size(_), Size(_))
+            | (Rect(_), Rect(_))
+            | (Insets(_), Insets(_))
+            | (Color(_), Color(_))
+            | (Float(_), Float(_))
+            | (Bool(_), Bool(_))
+            | (UnsignedInt(_), UnsignedInt(_))
+            | (String(_), String(_))
+            | (Font(_), Font(_))
+            | (RoundedRectRadii(_), RoundedRectRadii(_)) => true,
+            (Other(a), Other(b)) => a.as_ref().type_id() == b.as_ref().type_id(),
+            _ => false,
+        }
     }
 }
 
@@ -608,6 +609,29 @@ impl<T: 'static + Send + Sync> ValueType for Arc<T> {
     }
 }
 
+impl<T: 'static + Send + Sync> From<Option<T>> for Value {
+    fn from(this: Option<T>) -> Value {
+        Value::Other(Arc::new(this))
+    }
+}
+
+impl<T: 'static + Send + Sync + Clone> ValueType for Option<T> {
+    fn try_from_value(v: &Value) -> Result<Self, ValueTypeError> {
+        let err = ValueTypeError {
+            expected: any::type_name::<Option<T>>(),
+            found: v.clone(),
+        };
+        match v {
+            Value::Other(o) => o
+                .clone()
+                .downcast::<Option<T>>()
+                .map(|value| (*value).clone())
+                .map_err(|_| err),
+            _ => Err(err),
+        }
+    }
+}
+
 impl<T: ValueType> KeyOrValue<T> {
     /// Resolve the concrete type `T` from this `KeyOrValue`, using the provided
     /// [`Env`] if required.
@@ -671,5 +695,16 @@ mod tests {
         fn assert_send_sync<T: Send + Sync>() {}
 
         assert_send_sync::<Key<()>>();
+    }
+
+    #[test]
+    fn optional_key_or_value() {
+        const BACKGROUND: Key<Option<Color>> = Key::new("org.linebender.test.background");
+        let mut env = Env::empty().adding(BACKGROUND, Some(Color::RED));
+        let key: KeyOrValue<Option<Color>> = BACKGROUND.into();
+        assert_eq!(key.resolve(&env), Some(Color::RED));
+
+        env.set(BACKGROUND, None);
+        assert_eq!(key.resolve(&env), None);
     }
 }

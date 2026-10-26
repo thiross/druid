@@ -26,6 +26,7 @@ pub struct AttributeSpans {
     size: SpanSet<KeyOrValue<f64>>,
     weight: SpanSet<FontWeight>,
     fg_color: SpanSet<KeyOrValue<Color>>,
+    bg_color: SpanSet<KeyOrValue<Option<Color>>>,
     style: SpanSet<FontStyle>,
     underline: SpanSet<bool>,
     strikethrough: SpanSet<bool>,
@@ -81,6 +82,11 @@ pub enum Attribute {
     Weight(FontWeight),
     /// The foreground color of the text.
     TextColor(KeyOrValue<Color>),
+    /// The background color of the text.
+    ///
+    /// `Some(color)` paints the background behind the attributed range, while
+    /// `None` clears a background inherited from an outer range.
+    BackgroundColor(KeyOrValue<Option<Color>>),
     /// The [`FontStyle`]; either regular or italic.
     Style(FontStyle),
     /// Underline.
@@ -116,6 +122,7 @@ impl AttributeSpans {
             Attribute::FontSize(attr) => self.size.add(Span::new(range, attr)),
             Attribute::Weight(attr) => self.weight.add(Span::new(range, attr)),
             Attribute::TextColor(attr) => self.fg_color.add(Span::new(range, attr)),
+            Attribute::BackgroundColor(attr) => self.bg_color.add(Span::new(range, attr)),
             Attribute::Style(attr) => self.style.add(Span::new(range, attr)),
             Attribute::Underline(attr) => self.underline.add(Span::new(range, attr)),
             Attribute::Strikethrough(attr) => self.strikethrough.add(Span::new(range, attr)),
@@ -153,6 +160,12 @@ impl AttributeSpans {
                 .iter()
                 .map(|s| (s.range.clone(), PietAttr::TextColor(s.attr.resolve(env)))),
         );
+        items.extend(self.bg_color.iter().map(|s| {
+            (
+                s.range.clone(),
+                PietAttr::BackgroundColor(s.attr.resolve(env)),
+            )
+        }));
         items.extend(
             self.style
                 .iter()
@@ -171,7 +184,7 @@ impl AttributeSpans {
 
         // sort by ascending start order; this is a stable sort
         // so items that come from FontDescriptor will stay at the front
-        items.sort_by(|a, b| a.0.start.cmp(&b.0.start));
+        items.sort_by_key(|item| item.0.start);
         items
     }
 
@@ -181,6 +194,10 @@ impl AttributeSpans {
             .any(|span_attr| ctx.env_key_changed(&span_attr.attr))
             || self
                 .fg_color
+                .iter()
+                .any(|span_attr| ctx.env_key_changed(&span_attr.attr))
+            || self
+                .bg_color
                 .iter()
                 .any(|span_attr| ctx.env_key_changed(&span_attr.attr))
             || self
@@ -318,6 +335,13 @@ impl Attribute {
     /// Create a new foreground color attribute.
     pub fn text_color(color: impl Into<KeyOrValue<Color>>) -> Self {
         Attribute::TextColor(color.into())
+    }
+
+    /// Create a background color attribute.
+    ///
+    /// `None` clears a background inherited from an outer range.
+    pub fn background_color(color: impl Into<KeyOrValue<Option<Color>>>) -> Self {
+        Attribute::BackgroundColor(color.into())
     }
 
     /// Create a new font family attribute.

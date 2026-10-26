@@ -2346,7 +2346,7 @@ checksum = "5be167a7af36ee22fe3115051bc51f6e6c7054c9348e28deb4f49bd6f705a315"
 [[package]]
 name = "piet"
 version = "0.8.0"
-source = "git+https://github.com/thiross/piet.git?branch=master#ada75a5d40002ba0abb29136d059e230b84d2e2b"
+source = "git+https://github.com/thiross/piet.git?branch=master#25eeb60e1167c7b829e6da7bee9c8e3402b22caf"
 dependencies = [
  "icu_properties",
  "image",
@@ -2356,7 +2356,7 @@ dependencies = [
 [[package]]
 name = "piet-cairo"
 version = "0.8.0"
-source = "git+https://github.com/thiross/piet.git?branch=master#ada75a5d40002ba0abb29136d059e230b84d2e2b"
+source = "git+https://github.com/thiross/piet.git?branch=master#25eeb60e1167c7b829e6da7bee9c8e3402b22caf"
 dependencies = [
  "cairo-rs",
  "pango",
@@ -2369,7 +2369,7 @@ dependencies = [
 [[package]]
 name = "piet-common"
 version = "0.8.0"
-source = "git+https://github.com/thiross/piet.git?branch=master#ada75a5d40002ba0abb29136d059e230b84d2e2b"
+source = "git+https://github.com/thiross/piet.git?branch=master#25eeb60e1167c7b829e6da7bee9c8e3402b22caf"
 dependencies = [
  "cairo-rs",
  "cairo-sys-rs",
@@ -2389,7 +2389,7 @@ dependencies = [
 [[package]]
 name = "piet-coregraphics"
 version = "0.8.0"
-source = "git+https://github.com/thiross/piet.git?branch=master#ada75a5d40002ba0abb29136d059e230b84d2e2b"
+source = "git+https://github.com/thiross/piet.git?branch=master#25eeb60e1167c7b829e6da7bee9c8e3402b22caf"
 dependencies = [
  "associative-cache",
  "core-foundation 0.10.1",
@@ -2403,7 +2403,7 @@ dependencies = [
 [[package]]
 name = "piet-direct2d"
 version = "0.8.0"
-source = "git+https://github.com/thiross/piet.git?branch=master#ada75a5d40002ba0abb29136d059e230b84d2e2b"
+source = "git+https://github.com/thiross/piet.git?branch=master#25eeb60e1167c7b829e6da7bee9c8e3402b22caf"
 dependencies = [
  "associative-cache",
  "dwrote",
@@ -2416,7 +2416,7 @@ dependencies = [
 [[package]]
 name = "piet-tui"
 version = "0.8.0"
-source = "git+https://github.com/thiross/piet.git?branch=master#ada75a5d40002ba0abb29136d059e230b84d2e2b"
+source = "git+https://github.com/thiross/piet.git?branch=master#25eeb60e1167c7b829e6da7bee9c8e3402b22caf"
 dependencies = [
  "piet",
  "ratatui-core",
@@ -2427,7 +2427,7 @@ dependencies = [
 [[package]]
 name = "piet-web"
 version = "0.8.0"
-source = "git+https://github.com/thiross/piet.git?branch=master#ada75a5d40002ba0abb29136d059e230b84d2e2b"
+source = "git+https://github.com/thiross/piet.git?branch=master#25eeb60e1167c7b829e6da7bee9c8e3402b22caf"
 dependencies = [
  "js-sys",
  "piet",
