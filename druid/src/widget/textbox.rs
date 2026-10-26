@@ -446,9 +446,19 @@ impl<T> TextBox<T> {
         self.inner.child_mut().wrapped_mut()
     }
 
-    fn reset_cursor_blink(&mut self, token: TimerToken) {
+    fn reset_cursor_blink(&mut self, request_timer: impl FnOnce() -> TimerToken) {
         self.cursor_on = true;
-        self.cursor_timer = token;
+        #[cfg(not(feature = "tui"))]
+        {
+            self.cursor_timer = request_timer();
+        }
+        #[cfg(feature = "tui")]
+        {
+            // TUI uses the terminal's native cursor, which blinks without
+            // redrawing the window.
+            let _ = request_timer;
+            self.cursor_timer = TimerToken::INVALID;
+        }
     }
 
     #[cfg_attr(feature = "tui", allow(dead_code))]
@@ -560,7 +570,7 @@ impl<T: TextStorage + EditableText> Widget<T> for TextBox<T> {
                     if !mouse.focus {
                         ctx.request_focus();
                         self.was_focused_from_click = true;
-                        self.reset_cursor_blink(ctx.request_timer(CURSOR_BLINK_DURATION));
+                        self.reset_cursor_blink(|| ctx.request_timer(CURSOR_BLINK_DURATION));
                     } else {
                         ctx.set_handled();
                     }
@@ -579,7 +589,7 @@ impl<T: TextStorage + EditableText> Widget<T> for TextBox<T> {
                 }
             }
             Event::ImeStateChange => {
-                self.reset_cursor_blink(ctx.request_timer(CURSOR_BLINK_DURATION));
+                self.reset_cursor_blink(|| ctx.request_timer(CURSOR_BLINK_DURATION));
             }
             Event::Command(ref cmd)
                 if !self.text().is_composing()
@@ -653,7 +663,7 @@ impl<T: TextStorage + EditableText> Widget<T> for TextBox<T> {
                     ctx.invalidate_text_input(ImeInvalidation::SelectionChanged);
                 }
                 self.text_mut().has_focus = true;
-                self.reset_cursor_blink(ctx.request_timer(CURSOR_BLINK_DURATION));
+                self.reset_cursor_blink(|| ctx.request_timer(CURSOR_BLINK_DURATION));
                 self.was_focused_from_click = false;
                 ctx.request_paint();
                 ctx.scroll_to_view();
@@ -865,11 +875,27 @@ fn x_offset_for_extra_width(alignment: TextAlignment, extra_width: f64) -> f64 {
 
 #[cfg(all(test, feature = "tui"))]
 mod tests {
+    use std::cell::Cell;
     use std::sync::{Arc, Mutex};
 
     use super::*;
     use crate::tests::harness::Harness;
     use crate::WidgetPod;
+
+    #[test]
+    fn cursor_blink_relies_on_the_terminal_cursor() {
+        let mut textbox = TextBox::<String>::new();
+        let timer_requested = Cell::new(false);
+
+        textbox.reset_cursor_blink(|| {
+            timer_requested.set(true);
+            TimerToken::next()
+        });
+
+        assert!(textbox.cursor_on);
+        assert_eq!(textbox.cursor_timer, TimerToken::INVALID);
+        assert!(!timer_requested.get());
+    }
 
     struct SelectionScrollProbe {
         child: WidgetPod<String, TextBox<String>>,
