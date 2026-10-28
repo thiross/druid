@@ -12,6 +12,8 @@ pub mod helpers;
 mod invalidation_tests;
 #[cfg(test)]
 mod layout_tests;
+#[cfg(test)]
+mod selectable_label_tests;
 
 use std::cell::Cell;
 use std::collections::HashMap;

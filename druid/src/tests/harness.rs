@@ -211,6 +211,12 @@ impl<T: Data> Harness<'_, T> {
         &self.mock_app.data
     }
 
+    /// Replace the application data and run an update pass.
+    pub fn set_data(&mut self, data: T) {
+        self.mock_app.data = data;
+        self.update();
+    }
+
     /// Retrieve a copy of this widget's `WidgetState`, or die trying.
     pub fn get_state(&mut self, widget: WidgetId) -> WidgetState {
         match self.try_get_state(widget) {

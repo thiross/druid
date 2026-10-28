@@ -84,7 +84,7 @@ pub use progress_bar::ProgressBar;
 pub use radio::{Radio, RadioGroup};
 pub use scope::{DefaultScopePolicy, LensScopeTransfer, Scope, ScopePolicy, ScopeTransfer};
 pub use scroll::Scroll;
-pub use selectable_label::SelectableLabel;
+pub use selectable_label::{SelectableLabel, SelectionChange, SelectionChangeKind};
 pub use sized_box::SizedBox;
 pub use slider::{KnobStyle, RangeSlider, Slider};
 pub use spinner::Spinner;

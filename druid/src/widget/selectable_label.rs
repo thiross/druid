@@ -3,12 +3,15 @@
 
 //! A read-only text label with mouse selection and clipboard support.
 
+use std::collections::VecDeque;
 use std::ops::Range;
 use std::sync::Arc;
 
 use tracing::{instrument, trace, warn};
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::debug_state::DebugState;
+use crate::piet::TextLayout as _;
 use crate::text::{self, Selection, TextStorage};
 use crate::widget::prelude::*;
 use crate::widget::{Axis, LineBreaking};
@@ -25,6 +28,32 @@ enum DragGranularity {
     Grapheme,
     Word { start: usize, end: usize },
     Line { start: usize, end: usize },
+}
+
+/// The phase of a [`SelectableLabel`] selection change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SelectionChangeKind {
+    /// A new selection gesture started.
+    Started,
+    /// The active selection changed.
+    Updated,
+    /// The selection gesture finished.
+    Finished,
+    /// The selection was cleared.
+    Cleared,
+}
+
+/// A notification emitted when a [`SelectableLabel`] selection changes.
+///
+/// The [`Notification::source`] identifies the label that emitted the change.
+///
+/// [`Notification::source`]: crate::Notification::source
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SelectionChange {
+    /// The phase of the change.
+    pub kind: SelectionChangeKind,
+    /// The selection after the change, including a caret selection.
+    pub selection: Option<Selection>,
 }
 
 /// A read-only label whose text can be selected with the mouse and copied.
@@ -64,6 +93,8 @@ pub struct SelectableLabel<T> {
     disabled: bool,
     default_text_color: KeyOrValue<Color>,
     on_copy: Option<Arc<dyn Fn(&str)>>,
+    pending_selection_changes: VecDeque<SelectionChange>,
+    paint_on_next_event: bool,
 }
 
 impl<T: TextStorage> SelectableLabel<T> {
@@ -71,6 +102,25 @@ impl<T: TextStorage> SelectableLabel<T> {
     ///
     /// The payload is the copied text.
     pub const COPY: Selector<ArcStr> = Selector::new("druid-builtin.selectable-label-copy");
+
+    /// A notification emitted when the selection changes.
+    ///
+    /// Use [`Notification::source`] to identify which label changed. The
+    /// notification is delivered through the label's ancestors, so a
+    /// controller wrapping a label can coordinate a selection across
+    /// multiple labels.
+    ///
+    /// [`Notification::source`]: crate::Notification::source
+    pub const SELECTION_CHANGED: Selector<SelectionChange> =
+        Selector::new("druid-builtin.selectable-label-selection-changed");
+
+    /// A command that replaces this label's selection.
+    ///
+    /// Target the command to a specific label. This is the coordination
+    /// primitive for containers or sibling controllers that need to assign
+    /// selection ranges without access to the label's concrete widget type.
+    pub const SET_SELECTION: Selector<Option<Selection>> =
+        Selector::new("druid-builtin.selectable-label-set-selection");
 
     /// Create a new selectable label.
     ///
@@ -87,6 +137,8 @@ impl<T: TextStorage> SelectableLabel<T> {
             disabled: false,
             default_text_color: crate::theme::TEXT_COLOR.into(),
             on_copy: None,
+            pending_selection_changes: VecDeque::new(),
+            paint_on_next_event: false,
         }
     }
 
@@ -176,7 +228,49 @@ impl<T: TextStorage> SelectableLabel<T> {
     ///
     /// Returns `true` if there was a selection to clear.
     pub fn clear_selection(&mut self) -> bool {
-        self.selection.take().is_some()
+        let had_selection = self.selection.is_some();
+        self.set_selection(None);
+        had_selection
+    }
+
+    /// Return the current selection, including a caret selection.
+    pub fn selection(&self) -> Option<Selection> {
+        self.selection
+    }
+
+    /// Replace the current selection.
+    ///
+    /// Byte indices are clamped to the current text and snapped to the next
+    /// grapheme and text-layout boundary. The direction of the selection
+    /// (`anchor..active`) is preserved.
+    ///
+    /// This method does not require synthetic pointer or keyboard events.
+    /// Selection-change notifications and paint requests are queued until this
+    /// widget handles its next event. A controller can call this method before
+    /// forwarding an event to the child so both happen during that event.
+    pub fn set_selection(&mut self, selection: Option<Selection>) {
+        let previous = self.selection;
+        let selection = selection.map(|selection| self.constrain_selection(selection));
+        if previous == selection {
+            return;
+        }
+
+        let previous_range = Self::visible_range(previous);
+        let new_range = Self::visible_range(selection);
+        self.selection = selection;
+        self.drag_granularity = DragGranularity::Grapheme;
+        if previous_range != new_range {
+            self.paint_on_next_event = true;
+        }
+
+        let kind = if selection.is_none() {
+            SelectionChangeKind::Cleared
+        } else if previous.is_none() {
+            SelectionChangeKind::Started
+        } else {
+            SelectionChangeKind::Updated
+        };
+        self.queue_selection_change(kind);
     }
 
     /// Return the selected byte range, if any.
@@ -184,6 +278,28 @@ impl<T: TextStorage> SelectableLabel<T> {
         self.selection
             .filter(|selection| !selection.is_caret())
             .map(|selection| selection.range())
+    }
+
+    /// Return an owned copy of the selected text.
+    ///
+    /// This returns only the text selected in this label. Composing selected
+    /// fragments across multiple labels is the application's responsibility.
+    pub fn selected_text(&self) -> Option<ArcStr> {
+        let range = self.selected_range()?;
+        self.layout.text()?.as_str().get(range).map(ArcStr::from)
+    }
+
+    /// Map a point in this label's local coordinate space to a text byte index.
+    ///
+    /// The result is always a grapheme and text-layout boundary. Returns
+    /// `None` if the label has not been laid out yet.
+    pub fn text_position_for_point(&self, point: Point) -> Option<usize> {
+        let layout = self.layout.layout()?;
+        let text = self.layout.text()?.as_str();
+        let position = layout
+            .hit_test_point(point - self.draw_origin().to_vec2())
+            .idx;
+        Some(Self::next_grapheme_boundary(text, position))
     }
 
     fn text_origin() -> Point {
@@ -207,8 +323,91 @@ impl<T: TextStorage> SelectableLabel<T> {
     }
 
     fn position_for_point(&self, point: Point) -> usize {
-        self.layout
-            .text_position_for_point(point - self.draw_origin().to_vec2())
+        self.text_position_for_point(point).unwrap_or_default()
+    }
+
+    fn visible_range(selection: Option<Selection>) -> Option<Range<usize>> {
+        selection
+            .filter(|selection| !selection.is_caret())
+            .map(|selection| selection.range())
+    }
+
+    fn next_grapheme_boundary(text: &str, position: usize) -> usize {
+        let position = position.min(text.len());
+        if position == 0 || position == text.len() {
+            return position;
+        }
+
+        for (boundary, _) in text.grapheme_indices(true) {
+            if boundary >= position {
+                return boundary;
+            }
+        }
+        text.len()
+    }
+
+    fn constrain_selection(&self, mut selection: Selection) -> Selection {
+        let Some(text) = self.layout.text() else {
+            selection.anchor = 0;
+            selection.active = 0;
+            return selection;
+        };
+        let text = text.as_str();
+        selection.anchor = Self::next_grapheme_boundary(text, selection.anchor);
+        selection.active = Self::next_grapheme_boundary(text, selection.active);
+
+        if let Some(layout) = self.layout.layout() {
+            let anchor = layout.hit_test_text_position(selection.anchor).point;
+            let active = layout.hit_test_text_position(selection.active).point;
+            selection.anchor = layout.hit_test_point(anchor).idx;
+            selection.active = layout.hit_test_point(active).idx;
+            selection.anchor = Self::next_grapheme_boundary(text, selection.anchor);
+            selection.active = Self::next_grapheme_boundary(text, selection.active);
+        }
+        selection
+    }
+
+    fn queue_selection_change(&mut self, kind: SelectionChangeKind) {
+        self.pending_selection_changes.push_back(SelectionChange {
+            kind,
+            selection: self.selection,
+        });
+    }
+
+    fn flush_selection_changes(&mut self, ctx: &mut EventCtx) {
+        if self.paint_on_next_event {
+            ctx.request_paint();
+            self.paint_on_next_event = false;
+        }
+        for change in self.pending_selection_changes.drain(..) {
+            ctx.submit_notification(Self::SELECTION_CHANGED.with(change));
+        }
+    }
+
+    fn replace_selection(
+        &mut self,
+        selection: Option<Selection>,
+        kind: SelectionChangeKind,
+        reset_drag_granularity: bool,
+        always_notify: bool,
+    ) -> bool {
+        let previous = self.selection;
+        if previous == selection {
+            if always_notify {
+                self.queue_selection_change(kind);
+            }
+            return false;
+        }
+
+        if Self::visible_range(previous) != Self::visible_range(selection) {
+            self.paint_on_next_event = true;
+        }
+        self.selection = selection;
+        if reset_drag_granularity {
+            self.drag_granularity = DragGranularity::Grapheme;
+        }
+        self.queue_selection_change(kind);
+        true
     }
 
     fn begin_selection(&mut self, point: Point, count: u8, extend: bool) {
@@ -220,8 +419,9 @@ impl<T: TextStorage> SelectableLabel<T> {
         if extend {
             let mut selection = self.selection.unwrap_or_else(|| Selection::caret(position));
             selection.active = position;
-            self.selection = Some(selection.constrained(text.as_str()));
+            let selection = self.constrain_selection(selection);
             self.drag_granularity = DragGranularity::Grapheme;
+            self.replace_selection(Some(selection), SelectionChangeKind::Updated, false, true);
             return;
         }
 
@@ -249,7 +449,8 @@ impl<T: TextStorage> SelectableLabel<T> {
             _ => (position..position, DragGranularity::Grapheme),
         };
 
-        self.selection = Some(Selection::new(range.start, range.end));
+        let selection = self.constrain_selection(Selection::new(range.start, range.end));
+        self.replace_selection(Some(selection), SelectionChangeKind::Started, false, true);
         self.drag_granularity = granularity;
     }
 
@@ -280,7 +481,8 @@ impl<T: TextStorage> SelectableLabel<T> {
                 }
             }
         };
-        self.selection = Some(updated.constrained(text.as_str()));
+        let updated = self.constrain_selection(updated);
+        self.replace_selection(Some(updated), SelectionChangeKind::Updated, false, false);
     }
 
     fn select_all(&mut self) -> bool {
@@ -290,20 +492,20 @@ impl<T: TextStorage> SelectableLabel<T> {
         if text.as_str().is_empty() {
             return false;
         }
-        self.selection = Some(Selection::new(0, text.as_str().len()));
-        self.drag_granularity = DragGranularity::Grapheme;
+        self.replace_selection(
+            Some(Selection::new(0, text.as_str().len())),
+            SelectionChangeKind::Updated,
+            true,
+            false,
+        );
         true
-    }
-
-    fn selected_text(&self) -> Option<&str> {
-        let range = self.selected_range()?;
-        self.layout.text()?.as_str().get(range)
     }
 
     fn copy_selection(&self, ctx: &mut EventCtx) -> bool {
         let Some(selected) = self.selected_text() else {
             return false;
         };
+        let selected = selected.as_ref();
         if selected.is_empty() {
             return false;
         }
@@ -332,7 +534,13 @@ impl<T: TextStorage> Widget<T> for SelectableLabel<T> {
         skip(self, ctx, event, _data, env)
     )]
     fn event(&mut self, ctx: &mut EventCtx, event: &Event, _data: &mut T, env: &Env) {
+        self.flush_selection_changes(ctx);
         match event {
+            Event::Command(command) if command.is(Self::SET_SELECTION) => {
+                self.set_selection(*command.get_unchecked(Self::SET_SELECTION));
+                self.flush_selection_changes(ctx);
+                ctx.set_handled();
+            }
             Event::MouseDown(mouse) if mouse.button == MouseButton::Left && !ctx.is_disabled() => {
                 self.layout.rebuild_if_needed(ctx.text(), env);
                 ctx.request_focus();
@@ -362,6 +570,7 @@ impl<T: TextStorage> Widget<T> for SelectableLabel<T> {
             Event::MouseUp(mouse) if mouse.button == MouseButton::Left && ctx.is_active() => {
                 ctx.set_active(false);
                 ctx.request_paint();
+                self.queue_selection_change(SelectionChangeKind::Finished);
             }
             Event::KeyDown(key) if !ctx.is_disabled() => {
                 let copy = (key.mods.ctrl() && matches!(key.code, Code::KeyY | Code::Insert))
@@ -395,6 +604,7 @@ impl<T: TextStorage> Widget<T> for SelectableLabel<T> {
             }
             _ => {}
         }
+        self.flush_selection_changes(ctx);
     }
 
     #[instrument(
@@ -406,6 +616,13 @@ impl<T: TextStorage> Widget<T> for SelectableLabel<T> {
         match event {
             LifeCycle::WidgetAdded => {
                 self.layout.set_text(data.clone());
+                if let Some(selection) = self.selection {
+                    let constrained = self.constrain_selection(selection);
+                    if constrained != selection {
+                        self.selection = Some(constrained);
+                        self.queue_selection_change(SelectionChangeKind::Updated);
+                    }
+                }
             }
             LifeCycle::BuildFocusChain => {
                 ctx.register_for_focus();
@@ -425,6 +642,10 @@ impl<T: TextStorage> Widget<T> for SelectableLabel<T> {
             }
             _ => {}
         }
+        if self.paint_on_next_event {
+            ctx.request_paint();
+            self.paint_on_next_event = false;
+        }
     }
 
     #[instrument(
@@ -435,14 +656,27 @@ impl<T: TextStorage> Widget<T> for SelectableLabel<T> {
     fn update(&mut self, ctx: &mut UpdateCtx, old_data: &T, data: &T, _env: &Env) {
         if !old_data.same(data) {
             self.layout.set_text(data.clone());
-            self.selection = None;
+            if let Some(selection) = self.selection {
+                self.selection = Some(self.constrain_selection(selection));
+                self.paint_on_next_event = true;
+                self.queue_selection_change(SelectionChangeKind::Updated);
+            }
             self.drag_granularity = DragGranularity::Grapheme;
             ctx.request_layout();
         } else if let Some(selection) = self.selection {
-            self.selection = Some(selection.constrained(data.as_str()));
+            let constrained = self.constrain_selection(selection);
+            if constrained != selection {
+                self.selection = Some(constrained);
+                self.paint_on_next_event = true;
+                self.queue_selection_change(SelectionChangeKind::Updated);
+            }
         }
         if self.layout.needs_rebuild_after_update(ctx) {
             ctx.request_layout();
+        }
+        if self.paint_on_next_event {
+            ctx.request_paint();
+            self.paint_on_next_event = false;
         }
     }
 
@@ -534,12 +768,130 @@ mod tests {
     use std::rc::Rc;
 
     use super::*;
+    use crate::tests::helpers::{Record, Recording, TestWidgetExt};
     use crate::tests::{harness::Harness, move_mouse};
-    #[cfg(feature = "tui")]
-    use crate::widget::Padding;
-    #[cfg(feature = "tui")]
-    use crate::Insets;
-    use crate::{KbKey, KeyEvent, Modifiers, MouseButtons, MouseEvent, WidgetExt, WidgetId};
+    use crate::widget::{Controller, Padding, SizedBox};
+    use crate::{
+        Event, Insets, KbKey, KeyEvent, Modifiers, MouseButtons, MouseEvent, WidgetExt, WidgetId,
+    };
+
+    const PROBE: Selector<Probe> = Selector::new("druid-tests.selectable-label-probe");
+
+    #[derive(Clone, Copy, Debug)]
+    enum Probe {
+        Set(Option<Selection>),
+        HitTestAt(usize),
+    }
+
+    #[derive(Clone, Debug, Default)]
+    struct Observation {
+        selection: Option<Selection>,
+        selected_text: Option<ArcStr>,
+        position: Option<usize>,
+    }
+
+    #[derive(Clone)]
+    struct ProbeController {
+        observation: Rc<RefCell<Observation>>,
+    }
+
+    impl ProbeController {
+        fn new(observation: Rc<RefCell<Observation>>) -> Self {
+            Self { observation }
+        }
+
+        fn observe(&self, child: &SelectableLabel<String>) {
+            *self.observation.borrow_mut() = Observation {
+                selection: child.selection(),
+                selected_text: child.selected_text(),
+                position: None,
+            };
+        }
+    }
+
+    impl Controller<String, SelectableLabel<String>> for ProbeController {
+        fn event(
+            &mut self,
+            child: &mut SelectableLabel<String>,
+            ctx: &mut EventCtx,
+            event: &Event,
+            data: &mut String,
+            env: &Env,
+        ) {
+            if let Event::Command(command) = event {
+                if let Some(probe) = command.get(PROBE) {
+                    match *probe {
+                        Probe::Set(selection) => {
+                            child.set_selection(selection);
+                            // Forwarding the command flushes the setter's paint request and
+                            // notification without relying on synthetic input events.
+                            child.event(ctx, event, data, env);
+                            self.observe(child);
+                        }
+                        Probe::HitTestAt(position) => {
+                            let point = child.layout.point_for_text_position(position)
+                                + child.draw_origin().to_vec2();
+                            let mut observation = self.observation.borrow_mut();
+                            observation.position = child.text_position_for_point(point);
+                            observation.selection = child.selection();
+                            observation.selected_text = child.selected_text();
+                        }
+                    }
+                    ctx.set_handled();
+                    return;
+                }
+            }
+
+            child.event(ctx, event, data, env);
+            self.observe(child);
+        }
+
+        fn update(
+            &mut self,
+            child: &mut SelectableLabel<String>,
+            ctx: &mut UpdateCtx,
+            old_data: &String,
+            data: &String,
+            env: &Env,
+        ) {
+            child.update(ctx, old_data, data, env);
+            self.observe(child);
+        }
+    }
+
+    fn selection_changes(recording: &Recording) -> Vec<(WidgetId, SelectionChange)> {
+        recording
+            .drain()
+            .filter_map(|record| match record {
+                Record::E(Event::Notification(notification))
+                    if notification.is(SelectableLabel::<String>::SELECTION_CHANGED) =>
+                {
+                    Some((
+                        notification.source(),
+                        notification
+                            .get(SelectableLabel::<String>::SELECTION_CHANGED)
+                            .copied()
+                            .unwrap(),
+                    ))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn assert_nothing_painted(harness: &mut Harness<String>) {
+        harness.paint();
+        assert!(harness.window().invalid().is_empty());
+    }
+
+    fn record_label(
+        label: impl Widget<String> + 'static,
+        recording: &Recording,
+    ) -> impl Widget<String> {
+        // A parent container gives the label its own WidgetPod, so its
+        // notifications can bubble through the Recording widget.
+        Padding::new(Insets::ZERO, label).record(recording)
+    }
 
     fn mouse_event(pos: Point, button: MouseButton, count: u8) -> MouseEvent {
         let mut event = move_mouse(pos);
@@ -654,6 +1006,240 @@ mod tests {
         });
 
         assert_eq!(copied.borrow().as_deref(), Some("ello"));
+    }
+
+    #[test]
+    fn programmatic_selection_sets_text_and_requests_paint() {
+        let observation = Rc::new(RefCell::new(Observation::default()));
+        let observation_for_controller = observation.clone();
+        let recording = Recording::default();
+        let id = WidgetId::next();
+        let label = SelectableLabel::<String>::new()
+            .controller(ProbeController::new(observation_for_controller))
+            .with_id(id);
+        let root = record_label(label, &recording);
+
+        Harness::create_simple("hello world".to_owned(), root, |harness| {
+            harness.send_initial_events();
+            harness.just_layout();
+            assert_nothing_painted(harness);
+            recording.clear();
+
+            harness.submit_command(PROBE.with(Probe::Set(Some(Selection::new(1, 6)))).to(id));
+
+            let observed = observation.borrow();
+            assert_eq!(observed.selection, Some(Selection::new(1, 6)));
+            assert_eq!(observed.selected_text.as_deref(), Some("ello "));
+            drop(observed);
+            assert!(!harness.window().invalid().is_empty());
+
+            let changes = selection_changes(&recording);
+            assert_eq!(
+                changes,
+                vec![(
+                    id,
+                    SelectionChange {
+                        kind: SelectionChangeKind::Started,
+                        selection: Some(Selection::new(1, 6)),
+                    }
+                )]
+            );
+        });
+    }
+
+    #[test]
+    fn programmatic_clear_removes_selection_and_notifies() {
+        let observation = Rc::new(RefCell::new(Observation::default()));
+        let observation_for_controller = observation.clone();
+        let recording = Recording::default();
+        let id = WidgetId::next();
+        let label = SelectableLabel::<String>::new()
+            .controller(ProbeController::new(observation_for_controller))
+            .with_id(id);
+        let root = record_label(label, &recording);
+
+        Harness::create_simple("hello".to_owned(), root, |harness| {
+            harness.send_initial_events();
+            harness.just_layout();
+            harness.submit_command(PROBE.with(Probe::Set(Some(Selection::new(1, 4)))).to(id));
+            assert_nothing_painted(harness);
+            recording.clear();
+
+            harness.submit_command(PROBE.with(Probe::Set(None)).to(id));
+
+            assert_eq!(observation.borrow().selection, None);
+            assert_eq!(observation.borrow().selected_text, None);
+            assert!(!harness.window().invalid().is_empty());
+            assert_eq!(
+                selection_changes(&recording),
+                vec![(
+                    id,
+                    SelectionChange {
+                        kind: SelectionChangeKind::Cleared,
+                        selection: None,
+                    }
+                )]
+            );
+        });
+    }
+
+    #[test]
+    fn external_selection_snaps_to_utf8_grapheme_boundaries() {
+        let observation = Rc::new(RefCell::new(Observation::default()));
+        let observation_for_controller = observation.clone();
+        let recording = Recording::default();
+        let id = WidgetId::next();
+        let label = SelectableLabel::<String>::new()
+            .controller(ProbeController::new(observation_for_controller))
+            .with_id(id);
+        let root = record_label(label, &recording);
+
+        Harness::create_simple("éx".to_owned(), root, |harness| {
+            harness.send_initial_events();
+            harness.just_layout();
+
+            harness.submit_command(
+                PROBE
+                    .with(Probe::Set(Some(Selection::new(1, usize::MAX))))
+                    .to(id),
+            );
+            assert_eq!(observation.borrow().selection, Some(Selection::new(2, 3)));
+            assert_eq!(observation.borrow().selected_text.as_deref(), Some("x"));
+        });
+
+        let observation = Rc::new(RefCell::new(Observation::default()));
+        let observation_for_controller = observation.clone();
+        let recording = Recording::default();
+        let id = WidgetId::next();
+        let label = SelectableLabel::<String>::new()
+            .controller(ProbeController::new(observation_for_controller))
+            .with_id(id);
+        let root = record_label(label, &recording);
+
+        Harness::create_simple("e\u{301}x".to_owned(), root, |harness| {
+            harness.send_initial_events();
+            harness.just_layout();
+
+            harness.submit_command(PROBE.with(Probe::Set(Some(Selection::new(1, 3)))).to(id));
+            assert_eq!(observation.borrow().selection, Some(Selection::new(3, 3)));
+        });
+    }
+
+    #[test]
+    fn mouse_gesture_and_shift_click_emit_selection_phases() {
+        let observation = Rc::new(RefCell::new(Observation::default()));
+        let observation_for_controller = observation.clone();
+        let recording = Recording::default();
+        let id = WidgetId::next();
+        let label = SelectableLabel::<String>::new()
+            .controller(ProbeController::new(observation_for_controller))
+            .with_id(id);
+        let root = record_label(label, &recording);
+
+        Harness::create_simple("hello world".to_owned(), root, |harness| {
+            harness.send_initial_events();
+            harness.just_layout();
+            recording.clear();
+
+            harness.event(Event::MouseDown(mouse_event(
+                Point::new(8.0, 8.0),
+                MouseButton::Left,
+                1,
+            )));
+            harness.event(Event::MouseMove(move_mouse(Point::new(64.0, 8.0))));
+            harness.event(Event::MouseUp(mouse_event(
+                Point::new(64.0, 8.0),
+                MouseButton::Left,
+                0,
+            )));
+            let kinds: Vec<_> = selection_changes(&recording)
+                .into_iter()
+                .map(|(source, change)| {
+                    assert_eq!(source, id);
+                    change.kind
+                })
+                .collect();
+            assert_eq!(
+                kinds,
+                vec![
+                    SelectionChangeKind::Started,
+                    SelectionChangeKind::Updated,
+                    SelectionChangeKind::Finished
+                ]
+            );
+
+            let anchor = observation.borrow().selection.unwrap().anchor;
+            let mut extend = mouse_event(Point::new(96.0, 8.0), MouseButton::Left, 1);
+            extend.mods = Modifiers::SHIFT;
+            harness.event(Event::MouseDown(extend));
+            harness.event(Event::MouseUp(mouse_event(
+                Point::new(96.0, 8.0),
+                MouseButton::Left,
+                0,
+            )));
+            let changes = selection_changes(&recording);
+            assert_eq!(changes[0].1.kind, SelectionChangeKind::Updated);
+            assert_eq!(changes[1].1.kind, SelectionChangeKind::Finished);
+            assert_eq!(changes[0].1.selection.unwrap().anchor, anchor);
+        });
+    }
+
+    #[test]
+    fn text_replacement_clamps_selection_and_notifies() {
+        let observation = Rc::new(RefCell::new(Observation::default()));
+        let observation_for_controller = observation.clone();
+        let recording = Recording::default();
+        let id = WidgetId::next();
+        let label = SelectableLabel::<String>::new()
+            .controller(ProbeController::new(observation_for_controller))
+            .with_id(id);
+        let root = record_label(label, &recording);
+
+        Harness::create_simple("hello world".to_owned(), root, |harness| {
+            harness.send_initial_events();
+            harness.just_layout();
+            harness.submit_command(PROBE.with(Probe::Set(Some(Selection::new(1, 8)))).to(id));
+            recording.clear();
+
+            harness.set_data("hey".to_owned());
+            let observed = observation.borrow();
+            assert_eq!(observed.selection, Some(Selection::new(1, 3)));
+            assert_eq!(observed.selected_text.as_deref(), Some("ey"));
+            drop(observed);
+
+            harness.event(Event::WindowConnected);
+            let changes = selection_changes(&recording);
+            assert_eq!(changes.len(), 1);
+            assert_eq!(changes[0].1.kind, SelectionChangeKind::Updated);
+            assert_eq!(changes[0].1.selection, Some(Selection::new(1, 3)));
+        });
+    }
+
+    #[test]
+    fn text_position_mapping_respects_wrapped_wide_text() {
+        let observation = Rc::new(RefCell::new(Observation::default()));
+        let observation_for_controller = observation.clone();
+        let recording = Recording::default();
+        let id = WidgetId::next();
+        let label = SelectableLabel::<String>::new()
+            .controller(ProbeController::new(observation_for_controller))
+            .with_id(id);
+        let label = SizedBox::new(label).width(42.0).height(100.0);
+        let root = record_label(label, &recording);
+
+        Harness::create_simple("你a界 alpha beta".to_owned(), root, |harness| {
+            harness.send_initial_events();
+            harness.just_layout();
+
+            for position in [0, 3, 4, 8, 9, 14] {
+                harness.submit_command(PROBE.with(Probe::HitTestAt(position)).to(id));
+                assert_eq!(
+                    observation.borrow().position,
+                    Some(position),
+                    "mapping text position {position}"
+                );
+            }
+        });
     }
 
     #[test]

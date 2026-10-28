@@ -12,6 +12,9 @@ You can find its changes [documented below](#083---2023-02-28).
 - Type name is now included in panic error messages in `WidgetPod`. ([#2380] by [@matthewgapp])
 - `set_mouse_pass_through` sets whether the mouse passes through the window to whatever is behind. ([#2402] by [@AlexKnauth])
 - `is_foreground_window` returns true if the window is the foreground window or this is unknown, and returns false if a different window is known to be the foreground window. ([#2402] by [@AlexKnauth])
+- `SelectableLabel` exposes external selection access, selected text, pointer-to-text
+  hit testing, and selection-change notifications for coordinated cross-widget
+  selection. ([@thiross])
 
 ### Changed
 
