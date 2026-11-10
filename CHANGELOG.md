@@ -15,10 +15,15 @@ You can find its changes [documented below](#083---2023-02-28).
 - `SelectableLabel` exposes external selection access, selected text, pointer-to-text
   hit testing, and selection-change notifications for coordinated cross-widget
   selection. ([@thiross])
+- `EditableText` supports composite display ranges with configurable caret,
+  selection, edit, clipboard, and pointer normalization, including coalesced
+  edit transaction notifications for `TextBox`. ([@thiross])
 
 ### Changed
 
 - Windows: Custom cursor is now encapsulated by `Rc` instead of `Arc`. ([#2409] by [@xStrom])
+- `EditSession::set_selection` now takes the edited document and applies its
+  composite-range normalization before storing the selection. ([@thiross])
 
 ### Deprecated
 

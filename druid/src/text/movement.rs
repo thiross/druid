@@ -10,7 +10,8 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::kurbo::Point;
 use crate::piet::TextLayout as _;
 use crate::text::{
-    EditableText, Movement, Selection, TextLayout, TextStorage, VerticalMovement, WritingDirection,
+    EditableText, Movement, Selection, TextBoundary, TextLayout, TextStorage, VerticalMovement,
+    WritingDirection,
 };
 
 /// Compute the result of a [`Movement`] on a [`Selection`].
@@ -138,8 +139,31 @@ pub fn movement<T: EditableText + TextStorage>(
         }
     };
 
+    let affinity = match m {
+        Movement::Grapheme(d) | Movement::Word(d) | Movement::Line(d) => {
+            if d.is_upstream_for_direction(writing_direction) {
+                TextBoundary::Upstream
+            } else {
+                TextBoundary::Downstream
+            }
+        }
+        Movement::Vertical(VerticalMovement::LineUp | VerticalMovement::PageUp) => {
+            TextBoundary::Upstream
+        }
+        Movement::Vertical(VerticalMovement::LineDown | VerticalMovement::PageDown) => {
+            TextBoundary::Downstream
+        }
+        Movement::Vertical(VerticalMovement::DocumentStart) | Movement::ParagraphStart => {
+            TextBoundary::Upstream
+        }
+        Movement::Vertical(VerticalMovement::DocumentEnd) | Movement::ParagraphEnd => {
+            TextBoundary::Downstream
+        }
+        _ => TextBoundary::Downstream,
+    };
+    let offset = text.normalize_caret_offset(offset, affinity);
     let start = if modify { s.anchor } else { offset };
-    Selection::new(start, offset).with_h_pos(h_pos)
+    text.normalize_selection(Selection::new(start, offset).with_h_pos(h_pos))
 }
 
 /// Given a position in some text, return the containing word boundaries.

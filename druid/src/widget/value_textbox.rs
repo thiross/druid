@@ -153,7 +153,7 @@ impl<T: Data> ValueTextBox<T> {
                         .child
                         .text_mut()
                         .borrow_mut()
-                        .set_selection(Selection::new(0, self.buffer.len()))
+                        .set_selection(&self.buffer, Selection::new(0, self.buffer.len()))
                     {
                         ctx.invalidate_text_input(inval);
                     }
@@ -344,7 +344,12 @@ impl<T: Data + std::fmt::Debug> Widget<T> for ValueTextBox<T> {
     fn update(&mut self, ctx: &mut UpdateCtx, old: &T, data: &T, env: &Env) {
         if let Some(sel) = self.force_selection.take() {
             if self.child.text().can_write() {
-                if let Some(change) = self.child.text_mut().borrow_mut().set_selection(sel) {
+                if let Some(change) = self
+                    .child
+                    .text_mut()
+                    .borrow_mut()
+                    .set_selection(&self.buffer, sel)
+                {
                     ctx.invalidate_text_input(change);
                 }
             }

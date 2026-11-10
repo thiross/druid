@@ -5,13 +5,14 @@
 
 use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::ops::Range;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 
 use tracing::instrument;
 
 use super::{
-    EditableText, ImeHandlerRef, ImeInvalidation, InputHandler, Movement, Selection, TextAction,
-    TextLayout, TextStorage,
+    ArcStr, CompositeTextRange, EditableText, ImeHandlerRef, ImeInvalidation, InputHandler,
+    Movement, Selection, TextAction, TextBoundary, TextLayout, TextStorage,
 };
 use crate::kurbo::{Line, Point, Rect, Vec2};
 use crate::piet::TextLayout as _;
@@ -56,6 +57,86 @@ pub struct TextComponent<T> {
     pub has_focus: bool,
 }
 
+/// A document snapshot used for generic edit transaction notifications.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextSnapshot {
+    /// Contiguous display text.
+    pub text: ArcStr,
+    /// Composite text ranges at the time of the snapshot.
+    pub composites: Vec<CompositeTextRange>,
+}
+
+impl TextSnapshot {
+    pub(crate) fn from_document<T: EditableText + TextStorage>(document: &T) -> Self {
+        Self {
+            text: Arc::from(document.as_str()),
+            composites: document.composite_ranges().to_vec(),
+        }
+    }
+}
+
+/// An application-observable text edit.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextTransaction {
+    /// Monotonic transaction identifier.
+    pub id: u64,
+    /// Document text and composite membership before the edit.
+    pub before: TextSnapshot,
+    /// Document text and composite membership after the edit.
+    pub after: TextSnapshot,
+    /// Selection before the edit.
+    pub selection_before: Selection,
+    /// Selection after the edit.
+    pub selection_after: Selection,
+}
+
+/// A pointer hit on a composite text range.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompositeHit {
+    /// The hit composite.
+    pub composite: CompositeTextRange,
+    /// The zero-based display fragment containing the hit.
+    pub fragment_index: usize,
+    /// The number of display fragments occupied by the composite.
+    pub fragment_count: usize,
+    /// Horizontal position within the hit fragment, in the range `0..=1`.
+    pub relative_x: f64,
+}
+
+/// The clipboard operation that produced a [`ClipboardEvent`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClipboardAction {
+    /// Copy the selection.
+    Copy,
+    /// Cut the selection.
+    Cut,
+}
+
+/// Generic information about text written to the clipboard.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClipboardEvent {
+    /// The clipboard operation.
+    pub action: ClipboardAction,
+    /// The selected text range.
+    pub selection: Selection,
+    /// Application-neutral plain text written to the clipboard.
+    pub plain_text: String,
+    /// Complete composites contained in the selection.
+    pub composites: Vec<CompositeTextRange>,
+}
+
+static NEXT_TRANSACTION_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_transaction_id() -> u64 {
+    NEXT_TRANSACTION_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+#[derive(Clone, Debug)]
+struct PendingTransaction {
+    before: TextSnapshot,
+    selection_before: Selection,
+}
+
 /// Editable text state.
 ///
 /// This is the inner state of a [`TextComponent`]. It should only be accessed
@@ -94,6 +175,7 @@ pub struct EditSession<T> {
     drag_granularity: DragGranularity,
     /// The origin of the textbox, relative to the origin of the window.
     pub origin: Point,
+    pending_transaction: Option<PendingTransaction>,
 }
 
 /// An object that can be used to acquire an `ImeHandler`.
@@ -120,6 +202,11 @@ struct EditSessionHandle<T> {
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum DragGranularity {
     Grapheme,
+    /// Keep the composite whole while dragging in either direction.
+    Composite {
+        start: usize,
+        end: usize,
+    },
     /// Start and end are the start/end bounds of the initial selection.
     Word {
         start: usize,
@@ -198,6 +285,18 @@ impl TextComponent<()> {
     /// An ancestor can handle this event in order to do things like request
     /// a focus change.
     pub const BACKTAB: Selector = Selector::new("druid-builtin.textbox-backtab");
+
+    /// A notification containing one completed text edit transaction.
+    pub const EDIT_COMMITTED: Selector<TextTransaction> =
+        Selector::new("druid-builtin.textbox-edit-committed");
+
+    /// A notification containing generic clipboard selection information.
+    pub const CLIPBOARD: Selector<ClipboardEvent> =
+        Selector::new("druid-builtin.textbox-clipboard");
+
+    /// A notification sent when the user clicks a composite text range.
+    pub const COMPOSITE_HIT: Selector<CompositeHit> =
+        Selector::new("druid-builtin.textbox-composite-hit");
 }
 
 impl<T> TextComponent<T> {
@@ -276,10 +375,14 @@ impl<T: TextStorage + EditableText> Widget<T> for TextComponent<T> {
                     self.borrow_mut()
                         .update_pending_invalidation(ImeInvalidation::Reset);
                 }
-                self.borrow_mut()
-                    .do_mouse_down(mouse.pos, mouse.mods, mouse.count);
+                let composite_hit =
+                    self.borrow_mut()
+                        .do_mouse_down(data, mouse.pos, mouse.mods, mouse.count);
                 self.borrow_mut()
                     .update_pending_invalidation(ImeInvalidation::SelectionChanged);
+                if let Some(hit) = composite_hit {
+                    ctx.submit_notification_without_warning(TextComponent::COMPOSITE_HIT.with(hit));
+                }
                 ctx.request_update();
                 ctx.request_paint();
             }
@@ -288,7 +391,7 @@ impl<T: TextStorage + EditableText> Widget<T> for TextComponent<T> {
                     ctx.set_cursor(&Cursor::IBeam);
                     if ctx.is_active() {
                         let pre_sel = self.borrow().selection();
-                        self.borrow_mut().do_drag(mouse.pos);
+                        self.borrow_mut().do_drag(data, mouse.pos);
                         if self.borrow().selection() != pre_sel {
                             self.borrow_mut()
                                 .update_pending_invalidation(ImeInvalidation::SelectionChanged);
@@ -336,7 +439,7 @@ impl<T: TextStorage + EditableText> Widget<T> for TextComponent<T> {
                     *data = text;
                 }
                 if let Some(selection) = selection {
-                    self.borrow_mut().selection = selection;
+                    self.borrow_mut().selection = data.normalize_selection(selection);
                     ctx.request_paint();
                 }
                 ctx.request_update();
@@ -477,23 +580,6 @@ impl<T> EditSession<T> {
         self.selection
     }
 
-    /// Manually set the selection.
-    ///
-    /// If the new selection is different from the current selection, this
-    /// will return an ime event that the controlling widget should use to
-    /// invalidte the platform's IME state, by passing it to
-    /// [`EventCtx::invalidate_text_input`].
-    #[must_use]
-    pub fn set_selection(&mut self, selection: Selection) -> Option<ImeInvalidation> {
-        if selection != self.selection {
-            self.selection = selection;
-            self.update_pending_invalidation(ImeInvalidation::SelectionChanged);
-            Some(ImeInvalidation::SelectionChanged)
-        } else {
-            None
-        }
-    }
-
     /// The range of text currently being modified by an IME.
     pub fn composition_range(&self) -> Option<Range<usize>> {
         self.composition_range.clone()
@@ -567,14 +653,192 @@ impl<T> EditSession<T> {
 }
 
 impl<T: TextStorage + EditableText> EditSession<T> {
+    /// Set the selection after applying the document's composite policy.
+    ///
+    /// If the new selection is different from the current selection, this
+    /// returns an IME invalidation that the controlling widget should apply.
+    #[must_use]
+    pub fn set_selection(&mut self, data: &T, selection: Selection) -> Option<ImeInvalidation> {
+        let selection = data.normalize_selection(selection);
+        if selection != self.selection {
+            self.selection = selection;
+            self.update_pending_invalidation(ImeInvalidation::SelectionChanged);
+            Some(ImeInvalidation::SelectionChanged)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn complete_transaction(
+        &mut self,
+        data: &T,
+        before: TextSnapshot,
+        selection_before: Selection,
+        was_composing: bool,
+    ) -> Option<TextTransaction> {
+        let after = TextSnapshot::from_document(data);
+        let composing = self.composition_range.is_some();
+
+        if before == after {
+            if self.pending_transaction.is_some() && !composing {
+                let pending = self.pending_transaction.take()?;
+                return Some(TextTransaction {
+                    id: next_transaction_id(),
+                    before: pending.before,
+                    after,
+                    selection_before: pending.selection_before,
+                    selection_after: self.selection,
+                });
+            }
+            return None;
+        }
+
+        if composing || was_composing {
+            self.pending_transaction
+                .get_or_insert_with(|| PendingTransaction {
+                    before: before.clone(),
+                    selection_before,
+                });
+            if composing {
+                return None;
+            }
+        }
+
+        let pending = self.pending_transaction.take();
+        let (before, selection_before) = pending
+            .map(|pending| (pending.before, pending.selection_before))
+            .unwrap_or((before, selection_before));
+        Some(TextTransaction {
+            id: next_transaction_id(),
+            before,
+            after,
+            selection_before,
+            selection_after: self.selection,
+        })
+    }
+
+    fn normalize_hit_position(&self, data: &T, point: Point) -> usize {
+        let raw = self.layout.text_position_for_point(point);
+        let Some(composite) = self
+            .composite_at_point(data, point)
+            .or_else(|| data.composite_at(raw))
+        else {
+            return raw;
+        };
+        self.normalize_composite_position(data, &composite, point)
+    }
+
+    fn composite_at_point(&self, data: &T, point: Point) -> Option<CompositeTextRange> {
+        data.composite_ranges().iter().find_map(|composite| {
+            let hit = self
+                .layout
+                .rects_for_range(composite.range.clone())
+                .into_iter()
+                .any(|rect| {
+                    point.x >= rect.x0
+                        && point.x <= rect.x1
+                        && point.y >= rect.y0
+                        && point.y <= rect.y1
+                });
+            hit.then(|| composite.clone())
+        })
+    }
+
+    fn normalize_composite_position(
+        &self,
+        data: &T,
+        composite: &CompositeTextRange,
+        point: Point,
+    ) -> usize {
+        let Some(index) = self.nearest_composite_fragment(composite, point) else {
+            return data.normalize_caret_offset(composite.range.start, TextBoundary::Downstream);
+        };
+        let rects = self.layout.rects_for_range(composite.range.clone());
+        let rect = rects[index];
+        if point.x < rect.center().x {
+            composite.range.start
+        } else {
+            composite.range.end
+        }
+    }
+
+    fn nearest_composite_fragment(
+        &self,
+        composite: &CompositeTextRange,
+        point: Point,
+    ) -> Option<usize> {
+        self.layout
+            .rects_for_range(composite.range.clone())
+            .into_iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| {
+                let distance = |rect: Rect| {
+                    if point.y < rect.y0 {
+                        rect.y0 - point.y
+                    } else if point.y > rect.y1 {
+                        point.y - rect.y1
+                    } else {
+                        0.0
+                    }
+                };
+                distance(*a)
+                    .partial_cmp(&distance(*b))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|(index, _)| index)
+    }
+
+    fn composite_hit(&self, data: &T, position: usize, point: Point) -> Option<CompositeHit> {
+        let composite = self
+            .composite_at_point(data, point)
+            .or_else(|| data.composite_at(position))?;
+        let rects = self.layout.rects_for_range(composite.range.clone());
+        let fragment_index = self.nearest_composite_fragment(&composite, point)?;
+        let rect = rects[fragment_index];
+        let relative_x = if rect.width() > 0.0 {
+            ((point.x - rect.x0) / rect.width()).clamp(0.0, 1.0)
+        } else {
+            0.5
+        };
+        Some(CompositeHit {
+            composite,
+            fragment_index,
+            fragment_count: rects.len(),
+            relative_x,
+        })
+    }
+
+    fn normalize_edit_endpoint(
+        &self,
+        data: &T,
+        position: usize,
+        anchor: usize,
+        point: Point,
+    ) -> usize {
+        let Some(composite) = self
+            .composite_at_point(data, point)
+            .or_else(|| data.composite_at(position))
+        else {
+            return position;
+        };
+        if anchor <= composite.range.start {
+            composite.range.end
+        } else if anchor >= composite.range.end {
+            composite.range.start
+        } else {
+            self.normalize_composite_position(data, &composite, point)
+        }
+    }
+
     /// Insert text *not* from the IME, replacing the current selection.
     ///
     /// The caller is responsible for notifying the platform of the change in
     /// text state, by calling [`EventCtx::invalidate_text_input`].
     #[must_use]
     pub fn insert_text(&mut self, data: &mut T, new_text: &str) -> ImeInvalidation {
-        let new_cursor_pos = self.selection.min() + new_text.len();
-        data.edit(self.selection.range(), new_text);
+        let range = data.normalize_edit_range(self.selection.range());
+        let new_cursor_pos = range.start + new_text.len();
+        data.edit(range, new_text);
         self.selection = Selection::caret(new_cursor_pos);
         self.scroll_to_selection_end(true);
         ImeInvalidation::Reset
@@ -584,18 +848,38 @@ impl<T: TextStorage + EditableText> EditSession<T> {
     ///
     /// Returns `true` if the clipboard was set, and `false` if not (indicating)
     /// that the selection was empty.)
-    pub fn set_clipboard(&self) -> bool {
-        if let Some(text) = self
-            .layout
-            .text()
-            .and_then(|txt| txt.slice(self.selection.range()))
-        {
-            if !text.is_empty() {
-                crate::Application::global().clipboard().put_string(text);
-                return true;
-            }
+    pub fn set_clipboard(&self, data: &T, action: ClipboardAction) -> Option<ClipboardEvent> {
+        let event = self.clipboard_event(data, action)?;
+        crate::Application::global()
+            .clipboard()
+            .put_string(event.plain_text.clone());
+        Some(event)
+    }
+
+    /// Build the application-observable clipboard event without writing to the
+    /// platform clipboard.
+    pub fn clipboard_event(&self, data: &T, action: ClipboardAction) -> Option<ClipboardEvent> {
+        let selection = data.normalize_selection(self.selection);
+        let plain_text = data.clipboard_text(selection.range()).into_owned();
+        if plain_text.is_empty() {
+            return None;
         }
-        false
+
+        let composites = data
+            .composite_ranges()
+            .iter()
+            .filter(|composite| {
+                composite.range.start < selection.max() && selection.min() < composite.range.end
+            })
+            .cloned()
+            .collect();
+        let event = ClipboardEvent {
+            action,
+            selection,
+            plain_text,
+            composites,
+        };
+        Some(event)
     }
 
     fn scroll_to_selection_end(&mut self, after_edit: bool) {
@@ -620,9 +904,9 @@ impl<T: TextStorage + EditableText> EditSession<T> {
             }
             TextAction::SelectWord => {
                 if self.selection.is_caret() {
-                    let range =
-                        text::movement::word_range_for_pos(buffer.as_str(), self.selection.active);
-                    self.external_selection_change = Some(Selection::new(range.start, range.end));
+                    let range = text::movement::word_range_at(&self.layout, self.selection.active);
+                    self.external_selection_change =
+                        Some(buffer.normalize_selection(Selection::new(range.start, range.end)));
                 }
 
                 // it is unclear what the behaviour should be if the selection
@@ -637,7 +921,8 @@ impl<T: TextStorage + EditableText> EditSession<T> {
                 }
                 let prev = buffer.preceding_line_break(self.selection.active);
                 let next = buffer.next_line_break(self.selection.active);
-                self.external_selection_change = Some(Selection::new(prev, next));
+                self.external_selection_change =
+                    Some(buffer.normalize_selection(Selection::new(prev, next)));
             }
             TextAction::Delete(movement) if self.selection.is_caret() => {
                 if movement == Movement::Grapheme(druid_shell::text::Direction::Upstream) {
@@ -693,8 +978,9 @@ impl<T: TextStorage + EditableText> EditSession<T> {
     ///
     /// This should only be called from the IME.
     fn ime_insert_text(&mut self, buffer: &mut T, text: &str) {
-        let new_cursor_pos = self.selection.min() + text.len();
-        buffer.edit(self.selection.range(), text);
+        let range = buffer.normalize_edit_range(self.selection.range());
+        let new_cursor_pos = range.start + text.len();
+        buffer.edit(range, text);
         self.external_selection_change = Some(Selection::caret(new_cursor_pos));
         self.scroll_to_selection_end(true);
     }
@@ -706,31 +992,80 @@ impl<T: TextStorage + EditableText> EditSession<T> {
         } else {
             self.selection.range()
         };
+        let to_del = buffer.normalize_edit_range(to_del);
         self.external_selection_change = Some(Selection::caret(to_del.start));
         buffer.edit(to_del, "");
         self.scroll_to_selection_end(true);
     }
 
-    fn do_mouse_down(&mut self, point: Point, mods: Modifiers, count: u8) {
+    fn do_mouse_down(
+        &mut self,
+        data: &T,
+        point: Point,
+        mods: Modifiers,
+        count: u8,
+    ) -> Option<CompositeHit> {
         let point = point - Vec2::new(self.alignment_offset, 0.0);
-        let pos = self.layout.text_position_for_point(point);
-        if mods.shift() {
-            self.selection.active = pos;
+        let raw_pos = self.layout.text_position_for_point(point);
+        let composite_hit = self.composite_hit(data, raw_pos, point);
+        let pos = if let Some(hit) = &composite_hit {
+            if hit.relative_x < 0.5 {
+                hit.composite.range.start
+            } else {
+                hit.composite.range.end
+            }
         } else {
-            let Range { start, end } = self.sel_region_for_pos(pos, count);
-            self.selection = Selection::new(start, end);
+            raw_pos
+        };
+        if mods.shift() {
+            let active = if let Some(hit) = &composite_hit {
+                if self.selection.anchor <= hit.composite.range.start {
+                    hit.composite.range.end
+                } else if self.selection.anchor >= hit.composite.range.end {
+                    hit.composite.range.start
+                } else {
+                    pos
+                }
+            } else {
+                pos
+            };
+            self.selection = data.normalize_selection(
+                Selection::new(self.selection.anchor, active).with_h_pos(self.selection.h_pos),
+            );
+        } else if count == 1 {
+            if let Some(hit) = &composite_hit {
+                self.selection = Selection::new(hit.composite.range.start, hit.composite.range.end);
+                self.drag_granularity = DragGranularity::Composite {
+                    start: hit.composite.range.start,
+                    end: hit.composite.range.end,
+                };
+            } else {
+                self.selection = data.normalize_selection(Selection::caret(pos));
+                self.drag_granularity = DragGranularity::Grapheme;
+            }
+        } else if let Some(hit) = &composite_hit {
+            self.selection = Selection::new(hit.composite.range.start, hit.composite.range.end);
+            self.drag_granularity = DragGranularity::Composite {
+                start: hit.composite.range.start,
+                end: hit.composite.range.end,
+            };
+        } else {
+            let Range { start, end } = self.sel_region_for_pos(data, raw_pos, count);
+            self.selection = data.normalize_selection(Selection::new(start, end));
             self.drag_granularity = match count {
                 2 => DragGranularity::Word { start, end },
                 3 => DragGranularity::Paragraph { start, end },
                 _ => DragGranularity::Grapheme,
             };
         }
+        composite_hit
     }
 
-    fn do_drag(&mut self, point: Point) {
+    fn do_drag(&mut self, data: &T, point: Point) {
         let point = point - Vec2::new(self.alignment_offset, 0.0);
         //FIXME: this should behave differently if we were double or triple clicked
-        let pos = self.layout.text_position_for_point(point);
+        let raw_pos = self.layout.text_position_for_point(point);
+        let pos = self.normalize_edit_endpoint(data, raw_pos, self.selection.anchor, point);
         let text = match self.layout.text() {
             Some(text) => text,
             None => return,
@@ -738,6 +1073,15 @@ impl<T: TextStorage + EditableText> EditSession<T> {
 
         let (start, end) = match self.drag_granularity {
             DragGranularity::Grapheme => (self.selection.anchor, pos),
+            DragGranularity::Composite { start, end } => {
+                if pos < start {
+                    (pos, end)
+                } else if pos > end {
+                    (start, pos)
+                } else {
+                    (start, end)
+                }
+            }
             DragGranularity::Word { start, end } => {
                 let word_range = self.word_for_pos(pos);
                 if pos <= start {
@@ -757,7 +1101,7 @@ impl<T: TextStorage + EditableText> EditSession<T> {
                 }
             }
         };
-        self.selection = Selection::new(start, end);
+        self.selection = data.normalize_selection(Selection::new(start, end));
         self.scroll_to_selection_end(false);
     }
 
@@ -767,10 +1111,14 @@ impl<T: TextStorage + EditableText> EditSession<T> {
         line + Vec2::new(self.alignment_offset, 0.0)
     }
 
-    fn sel_region_for_pos(&mut self, pos: usize, click_count: u8) -> Range<usize> {
+    fn sel_region_for_pos(&mut self, data: &T, pos: usize, click_count: u8) -> Range<usize> {
         match click_count {
             1 => pos..pos,
-            2 => self.word_for_pos(pos),
+            2 => {
+                let range = self.word_for_pos(pos);
+                data.normalize_selection(Selection::new(range.start, range.end))
+                    .range()
+            }
             _ => {
                 let text = match self.layout.text() {
                     Some(text) => text,
@@ -778,7 +1126,8 @@ impl<T: TextStorage + EditableText> EditSession<T> {
                 };
                 let line_min = text.preceding_line_break(pos);
                 let line_max = text.next_line_break(pos);
-                line_min..line_max
+                data.normalize_selection(Selection::new(line_min, line_max))
+                    .range()
             }
         }
     }
@@ -788,6 +1137,18 @@ impl<T: TextStorage + EditableText> EditSession<T> {
     }
 
     fn update(&mut self, ctx: &mut UpdateCtx, new_data: &T, env: &Env) {
+        if let Err(error) = new_data.validate_composite_ranges() {
+            debug_assert!(
+                false,
+                "invalid composite text ranges in {}: {error:?}",
+                std::any::type_name::<T>()
+            );
+            tracing::error!(
+                document = std::any::type_name::<T>(),
+                ?error,
+                "invalid composite text ranges"
+            );
+        }
         if self
             .layout
             .text()
@@ -801,7 +1162,7 @@ impl<T: TextStorage + EditableText> EditSession<T> {
         if self.layout.needs_rebuild_after_update(ctx) {
             ctx.request_layout();
         }
-        let new_sel = self.selection.constrained(new_data.as_str());
+        let new_sel = new_data.normalize_selection(self.selection.constrained(new_data.as_str()));
         if new_sel != self.selection {
             self.selection = new_sel;
             self.update_pending_invalidation(ImeInvalidation::SelectionChanged);
@@ -823,7 +1184,8 @@ impl<T: TextStorage + EditableText> InputHandler for EditSessionHandle<T> {
     }
 
     fn set_selection(&mut self, selection: Selection) {
-        self.inner.borrow_mut().external_selection_change = Some(selection);
+        self.inner.borrow_mut().external_selection_change =
+            Some(self.text.normalize_selection(selection));
         self.inner.borrow_mut().external_scroll_to = Some(true);
     }
 
@@ -832,7 +1194,31 @@ impl<T: TextStorage + EditableText> InputHandler for EditSessionHandle<T> {
     }
 
     fn set_composition_range(&mut self, range: Option<Range<usize>>) {
-        self.inner.borrow_mut().composition_range = range;
+        let Some(range) = range else {
+            self.inner.borrow_mut().composition_range = None;
+            return;
+        };
+
+        let overlaps = if range.is_empty() {
+            self.text
+                .composite_ranges()
+                .iter()
+                .any(|composite| composite.strictly_contains(range.start))
+        } else {
+            self.text.composite_ranges().iter().any(|composite| {
+                composite.range.start < range.end && range.start < composite.range.end
+            })
+        };
+        if overlaps {
+            let normalized = self.text.normalize_edit_range(range);
+            let mut inner = self.inner.borrow_mut();
+            inner.composition_range = None;
+            inner.external_selection_change = Some(Selection::caret(normalized.start));
+            inner.external_scroll_to = Some(true);
+            inner.update_pending_invalidation(ImeInvalidation::Reset);
+        } else {
+            self.inner.borrow_mut().composition_range = Some(range);
+        }
     }
 
     fn is_char_boundary(&self, i: usize) -> bool {
@@ -848,17 +1234,20 @@ impl<T: TextStorage + EditableText> InputHandler for EditSessionHandle<T> {
     }
 
     fn replace_range(&mut self, range: Range<usize>, text: &str) {
+        let range = self.text.normalize_edit_range(range);
         self.text.edit(range, text);
         self.inner.borrow_mut().external_text_change = Some(self.text.clone());
     }
 
     fn hit_test_point(&self, point: Point) -> crate::piet::HitTestPoint {
-        self.inner
-            .borrow()
+        let inner = self.inner.borrow();
+        let mut hit = inner
             .layout
             .layout()
             .map(|layout| layout.hit_test_point(point))
-            .unwrap_or_default()
+            .unwrap_or_default();
+        hit.idx = inner.normalize_hit_position(&self.text, point);
+        hit
     }
 
     fn line_range(&self, index: usize, _affinity: druid_shell::text::Affinity) -> Range<usize> {
@@ -924,6 +1313,7 @@ impl<T> Default for TextComponent<T> {
             alignment_offset: 0.0,
             drag_granularity: DragGranularity::Grapheme,
             origin: Point::ZERO,
+            pending_transaction: None,
         };
 
         TextComponent {
@@ -933,5 +1323,431 @@ impl<T> Default for TextComponent<T> {
             lock: Arc::new(Cell::new(ImeLock::None)),
             has_focus: false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use super::*;
+    use crate::piet::TextStorage as PietTextStorage;
+    use crate::tests::harness::Harness;
+    use crate::text::{CompositeKey, StringCursor};
+    use crate::widget::{Controller, TextBox, WidgetExt};
+    use crate::{Data, Env};
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct CompositeDocument {
+        text: String,
+        composites: Vec<CompositeTextRange>,
+    }
+
+    impl CompositeDocument {
+        fn new() -> Self {
+            Self::with_composite_text("ab<label>cd", 2..9)
+        }
+
+        fn with_composite_text(text: &str, range: Range<usize>) -> Self {
+            Self {
+                text: text.to_owned(),
+                composites: vec![CompositeTextRange::new(CompositeKey::new(7), range)],
+            }
+        }
+    }
+
+    impl Data for CompositeDocument {
+        fn same(&self, other: &Self) -> bool {
+            self == other
+        }
+    }
+
+    impl PietTextStorage for CompositeDocument {
+        fn as_str(&self) -> &str {
+            &self.text
+        }
+    }
+
+    impl TextStorage for CompositeDocument {}
+
+    impl EditableText for CompositeDocument {
+        fn cursor(&self, position: usize) -> Option<StringCursor<'_>> {
+            self.text.cursor(position)
+        }
+
+        fn edit(&mut self, range: Range<usize>, new: impl Into<String>) {
+            self.text.edit(range, new);
+        }
+
+        fn slice(&self, range: Range<usize>) -> Option<std::borrow::Cow<'_, str>> {
+            self.text.slice(range)
+        }
+
+        fn len(&self) -> usize {
+            self.text.len()
+        }
+
+        fn prev_word_offset(&self, offset: usize) -> Option<usize> {
+            self.text.prev_word_offset(offset)
+        }
+
+        fn next_word_offset(&self, offset: usize) -> Option<usize> {
+            self.text.next_word_offset(offset)
+        }
+
+        fn prev_grapheme_offset(&self, offset: usize) -> Option<usize> {
+            self.text.prev_grapheme_offset(offset)
+        }
+
+        fn next_grapheme_offset(&self, offset: usize) -> Option<usize> {
+            self.text.next_grapheme_offset(offset)
+        }
+
+        fn prev_codepoint_offset(&self, offset: usize) -> Option<usize> {
+            self.text.prev_codepoint_offset(offset)
+        }
+
+        fn next_codepoint_offset(&self, offset: usize) -> Option<usize> {
+            self.text.next_codepoint_offset(offset)
+        }
+
+        fn preceding_line_break(&self, offset: usize) -> usize {
+            self.text.preceding_line_break(offset)
+        }
+
+        fn next_line_break(&self, offset: usize) -> usize {
+            self.text.next_line_break(offset)
+        }
+
+        fn is_empty(&self) -> bool {
+            self.text.is_empty()
+        }
+
+        fn from_str(s: &str) -> Self {
+            Self {
+                text: s.to_owned(),
+                composites: Vec::new(),
+            }
+        }
+
+        fn composite_ranges(&self) -> &[CompositeTextRange] {
+            &self.composites
+        }
+
+        fn composite_text(&self, _composite: &CompositeTextRange) -> std::borrow::Cow<'_, str> {
+            std::borrow::Cow::Borrowed("<reference>")
+        }
+    }
+
+    fn before(data: &CompositeDocument) -> TextSnapshot {
+        TextSnapshot::from_document(data)
+    }
+
+    fn component_with_document() -> TextComponent<CompositeDocument> {
+        let component = TextComponent::<CompositeDocument>::default();
+        component
+            .borrow_mut()
+            .layout
+            .set_text(CompositeDocument::new());
+        component
+    }
+
+    #[test]
+    fn completed_edit_emits_transaction_snapshot() {
+        let mut data = CompositeDocument::new();
+        let before = before(&data);
+        let selection_before = Selection::caret(2);
+        data.edit(2..2, "x");
+        let component = TextComponent::<CompositeDocument>::default();
+        let mut session = component.borrow_mut();
+        session.selection = Selection::caret(3);
+
+        let transaction = session
+            .complete_transaction(&data, before, selection_before, false)
+            .expect("edit should produce a transaction");
+        assert_eq!(transaction.before.text.as_ref(), "ab<label>cd");
+        assert_eq!(transaction.after.text.as_ref(), "abx<label>cd");
+        assert_eq!(transaction.selection_before, Selection::caret(2));
+        assert_eq!(transaction.selection_after, Selection::caret(3));
+    }
+
+    #[test]
+    fn ime_edits_are_coalesced_into_one_transaction() {
+        let mut data = CompositeDocument::new();
+        let first_before = before(&data);
+        let component = TextComponent::<CompositeDocument>::default();
+        let mut session = component.borrow_mut();
+        session.selection = Selection::caret(0);
+        session.composition_range = Some(0..0);
+
+        data.edit(0..0, "a");
+        assert!(session
+            .complete_transaction(&data, first_before, Selection::caret(0), false)
+            .is_none());
+
+        let second_before = before(&data);
+        session.selection = Selection::caret(1);
+        data.edit(1..1, "b");
+        session.composition_range = None;
+        let transaction = session
+            .complete_transaction(&data, second_before, Selection::caret(1), true)
+            .expect("finished composition should emit one transaction");
+
+        assert_eq!(transaction.before.text.as_ref(), "ab<label>cd");
+        assert_eq!(transaction.after.text.as_ref(), "abab<label>cd");
+        assert_eq!(transaction.selection_before, Selection::caret(0));
+        assert_eq!(transaction.selection_after, Selection::caret(1));
+    }
+
+    #[test]
+    fn composition_range_cannot_span_a_composite() {
+        let component = component_with_document();
+        let handler = component.input_handler();
+        let mut handler = handler.acquire(true).unwrap();
+
+        handler.set_composition_range(Some(4..6));
+        assert_eq!(handler.composition_range(), None);
+    }
+
+    #[test]
+    fn composition_range_adjacent_to_composite_is_accepted() {
+        let component = component_with_document();
+        let handler = component.input_handler();
+        let mut handler = handler.acquire(true).unwrap();
+
+        handler.set_composition_range(Some(0..2));
+        assert_eq!(handler.composition_range(), Some(0..2));
+
+        handler.set_composition_range(Some(2..2));
+        assert_eq!(handler.composition_range(), Some(2..2));
+    }
+
+    #[test]
+    fn input_replacement_expands_to_the_composite() {
+        let component = component_with_document();
+        let handler = component.input_handler();
+        let mut handler = handler.acquire(true).unwrap();
+
+        handler.replace_range(4..6, "x");
+        assert_eq!(handler.slice(0..handler.len()).as_ref(), "abxcd");
+    }
+
+    #[test]
+    fn insertion_at_composite_boundary_keeps_the_composite() {
+        let component = TextComponent::<CompositeDocument>::default();
+        let mut session = component.borrow_mut();
+        let mut data = CompositeDocument::new();
+        session.selection = Selection::caret(2);
+
+        let _ = session.insert_text(&mut data, "x");
+        assert_eq!(data.text, "abx<label>cd");
+    }
+
+    #[test]
+    fn insertion_inside_composite_replaces_it_whole() {
+        let component = TextComponent::<CompositeDocument>::default();
+        let mut session = component.borrow_mut();
+        let mut data = CompositeDocument::new();
+        session.selection = Selection::caret(4);
+
+        let _ = session.insert_text(&mut data, "x");
+        assert_eq!(data.text, "abxcd");
+    }
+
+    #[test]
+    fn backspace_after_composite_removes_it_whole() {
+        let component = TextComponent::<CompositeDocument>::default();
+        let mut session = component.borrow_mut();
+        let mut data = CompositeDocument::new();
+        session.selection = Selection::caret(9);
+
+        session.backspace(&mut data);
+        assert_eq!(data.text, "abcd");
+    }
+
+    #[test]
+    fn copy_event_uses_composite_plain_text() {
+        let component = TextComponent::<CompositeDocument>::default();
+        let mut session = component.borrow_mut();
+        let data = CompositeDocument::new();
+        session.selection = Selection::new(0, 11);
+
+        let event = session
+            .clipboard_event(&data, ClipboardAction::Copy)
+            .expect("nonempty selection should produce clipboard data");
+        assert_eq!(event.plain_text, "ab<reference>cd");
+        assert_eq!(event.composites, data.composites);
+    }
+
+    #[cfg(feature = "tui")]
+    struct SelectionProbe(Rc<Cell<Selection>>);
+
+    #[cfg(feature = "tui")]
+    impl Controller<CompositeDocument, TextComponent<CompositeDocument>> for SelectionProbe {
+        fn event(
+            &mut self,
+            child: &mut TextComponent<CompositeDocument>,
+            ctx: &mut EventCtx,
+            event: &Event,
+            data: &mut CompositeDocument,
+            env: &Env,
+        ) {
+            child.event(ctx, event, data, env);
+            if matches!(event, Event::MouseDown(_) | Event::MouseMove(_)) {
+                self.0.set(child.borrow().selection());
+            }
+        }
+    }
+
+    #[cfg(feature = "tui")]
+    #[test]
+    fn clicking_inside_composite_selects_it_whole() {
+        let observed = Rc::new(Cell::new(Selection::default()));
+        let probe = SelectionProbe(observed.clone());
+        let widget = TextComponent::<CompositeDocument>::default().controller(probe);
+
+        Harness::create_simple(CompositeDocument::new(), widget, |harness| {
+            harness.send_initial_events();
+            harness.just_layout();
+            harness.event(Event::MouseDown(crate::MouseEvent {
+                pos: Point::new(71.0, 8.0),
+                window_pos: Point::new(71.0, 8.0),
+                buttons: crate::MouseButtons::new(),
+                mods: crate::Modifiers::default(),
+                count: 1,
+                focus: true,
+                button: crate::MouseButton::Left,
+                wheel_delta: Vec2::ZERO,
+            }));
+            assert_eq!(observed.get(), Selection::new(2, 9));
+        });
+    }
+
+    #[cfg(feature = "tui")]
+    #[test]
+    fn dragging_away_from_composite_keeps_it_selected() {
+        let observed = Rc::new(Cell::new(Selection::default()));
+        let probe = SelectionProbe(observed.clone());
+        let widget = TextComponent::<CompositeDocument>::default().controller(probe);
+
+        Harness::create_simple(CompositeDocument::new(), widget, |harness| {
+            harness.send_initial_events();
+            harness.just_layout();
+            harness.event(Event::MouseDown(crate::MouseEvent {
+                pos: Point::new(33.0, 8.0),
+                window_pos: Point::new(33.0, 8.0),
+                buttons: crate::MouseButtons::new(),
+                mods: crate::Modifiers::default(),
+                count: 1,
+                focus: true,
+                button: crate::MouseButton::Left,
+                wheel_delta: Vec2::ZERO,
+            }));
+            harness.event(Event::MouseMove(crate::MouseEvent {
+                pos: Point::new(1.0, 8.0),
+                window_pos: Point::new(1.0, 8.0),
+                buttons: crate::MouseButtons::new().with(crate::MouseButton::Left),
+                mods: crate::Modifiers::default(),
+                count: 0,
+                focus: false,
+                button: crate::MouseButton::None,
+                wheel_delta: Vec2::ZERO,
+            }));
+            assert_eq!(observed.get(), Selection::new(0, 9));
+        });
+    }
+
+    #[cfg(feature = "tui")]
+    #[test]
+    fn double_clicking_composite_selects_it_whole() {
+        let observed = Rc::new(Cell::new(Selection::default()));
+        let probe = SelectionProbe(observed.clone());
+        let widget = TextComponent::<CompositeDocument>::default().controller(probe);
+
+        Harness::create_simple(CompositeDocument::new(), widget, |harness| {
+            harness.send_initial_events();
+            harness.just_layout();
+            harness.event(Event::MouseDown(crate::MouseEvent {
+                pos: Point::new(33.0, 8.0),
+                window_pos: Point::new(33.0, 8.0),
+                buttons: crate::MouseButtons::new(),
+                mods: crate::Modifiers::default(),
+                count: 2,
+                focus: true,
+                button: crate::MouseButton::Left,
+                wheel_delta: Vec2::ZERO,
+            }));
+            assert_eq!(observed.get(), Selection::new(2, 9));
+        });
+    }
+
+    #[cfg(feature = "tui")]
+    #[test]
+    fn clicking_wrapped_composite_fragment_selects_it_whole() {
+        let observed = Rc::new(Cell::new(Selection::default()));
+        let probe = SelectionProbe(observed.clone());
+        let widget = TextComponent::<CompositeDocument>::default().controller(probe);
+        let data = CompositeDocument::with_composite_text("xxabcdefghijklYY", 2..14);
+
+        Harness::create_with_render(
+            data,
+            widget,
+            crate::Size::new(80.0, 80.0),
+            |harness| {
+                harness.send_initial_events();
+                harness.just_layout();
+                harness.event(Event::MouseDown(crate::MouseEvent {
+                    pos: Point::new(20.0, 24.0),
+                    window_pos: Point::new(20.0, 24.0),
+                    buttons: crate::MouseButtons::new(),
+                    mods: crate::Modifiers::default(),
+                    count: 1,
+                    focus: true,
+                    button: crate::MouseButton::Left,
+                    wheel_delta: Vec2::ZERO,
+                }));
+                assert_eq!(observed.get(), Selection::new(2, 14));
+            },
+            |_| {},
+        );
+    }
+
+    struct MovementProbe(Rc<Cell<Option<Selection>>>);
+
+    impl Controller<CompositeDocument, TextBox<CompositeDocument>> for MovementProbe {
+        fn event(
+            &mut self,
+            child: &mut TextBox<CompositeDocument>,
+            ctx: &mut EventCtx,
+            event: &Event,
+            data: &mut CompositeDocument,
+            env: &Env,
+        ) {
+            if matches!(event, Event::WindowSize(_)) {
+                let session = child.text().borrow();
+                self.0.set(Some(text::movement(
+                    Movement::Grapheme(crate::text::Direction::Downstream),
+                    Selection::caret(2),
+                    &session.layout,
+                    false,
+                )));
+            }
+            child.event(ctx, event, data, env);
+        }
+    }
+
+    #[test]
+    fn grapheme_movement_crosses_composite_as_one_unit() {
+        let observed = Rc::new(Cell::new(None));
+        let widget =
+            TextBox::<CompositeDocument>::new().controller(MovementProbe(observed.clone()));
+
+        Harness::create_simple(CompositeDocument::new(), widget, |harness| {
+            harness.send_initial_events();
+            harness.just_layout();
+            harness.event(Event::WindowSize(crate::Size::new(400.0, 400.0)));
+            assert_eq!(observed.get(), Some(Selection::caret(9)));
+        });
     }
 }

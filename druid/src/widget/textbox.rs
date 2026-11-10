@@ -529,6 +529,22 @@ impl<T: TextStorage + EditableText> TextBox<T> {
 impl<T: TextStorage + EditableText> Widget<T> for TextBox<T> {
     #[instrument(name = "TextBox", level = "trace", skip(self, ctx, event, data, env))]
     fn event(&mut self, ctx: &mut EventCtx, event: &Event, data: &mut T, env: &Env) {
+        let captures_transaction = match event {
+            Event::ImeStateChange | Event::Paste(_) => true,
+            Event::Command(command) => command.is(crate::commands::CUT),
+            _ => false,
+        };
+        let transaction_before = captures_transaction.then(|| {
+            let before = crate::text::TextSnapshot::from_document(data);
+            let selection = if self.text().can_read() {
+                self.text().borrow().selection()
+            } else {
+                Selection::default()
+            };
+            let composing = self.text().can_read() && self.text().is_composing();
+            (before, selection, composing)
+        });
+
         match event {
             Event::Notification(cmd) => match cmd {
                 cmd if cmd.is(TextComponent::SCROLL_TO) => {
@@ -596,7 +612,16 @@ impl<T: TextStorage + EditableText> Widget<T> for TextBox<T> {
                     && ctx.is_focused()
                     && cmd.is(crate::commands::COPY) =>
             {
-                self.text().borrow().set_clipboard();
+                let event = {
+                    self.text()
+                        .borrow()
+                        .set_clipboard(data, crate::text::ClipboardAction::Copy)
+                };
+                if let Some(event) = event {
+                    ctx.submit_notification_without_warning(
+                        crate::text::TextComponent::CLIPBOARD.with(event),
+                    );
+                }
                 ctx.set_handled();
             }
             Event::Command(cmd)
@@ -604,7 +629,15 @@ impl<T: TextStorage + EditableText> Widget<T> for TextBox<T> {
                     && ctx.is_focused()
                     && cmd.is(crate::commands::CUT) =>
             {
-                if self.text().borrow().set_clipboard() {
+                let event = {
+                    self.text()
+                        .borrow()
+                        .set_clipboard(data, crate::text::ClipboardAction::Cut)
+                };
+                if let Some(event) = event {
+                    ctx.submit_notification_without_warning(
+                        crate::text::TextComponent::CLIPBOARD.with(event),
+                    );
                     let inval = self.text_mut().borrow_mut().insert_text(data, "");
                     ctx.invalidate_text_input(inval);
                 }
@@ -618,7 +651,7 @@ impl<T: TextStorage + EditableText> Widget<T> for TextBox<T> {
                 if let Some(inval) = self
                     .text_mut()
                     .borrow_mut()
-                    .set_selection(Selection::new(0, data.as_str().len()))
+                    .set_selection(data, Selection::new(0, data.as_str().len()))
                 {
                     ctx.request_paint();
                     ctx.invalidate_text_input(inval);
@@ -640,7 +673,24 @@ impl<T: TextStorage + EditableText> Widget<T> for TextBox<T> {
             }
             _ => (),
         }
-        self.inner.event(ctx, event, data, env)
+        self.inner.event(ctx, event, data, env);
+
+        if let Some((before, selection_before, was_composing)) = transaction_before {
+            if !self.text().can_write() {
+                return;
+            }
+            let transaction = self.text_mut().borrow_mut().complete_transaction(
+                data,
+                before,
+                selection_before,
+                was_composing,
+            );
+            if let Some(transaction) = transaction {
+                ctx.submit_notification_without_warning(
+                    crate::text::TextComponent::EDIT_COMMITTED.with(transaction),
+                );
+            }
+        }
     }
 
     #[instrument(name = "TextBox", level = "trace", skip(self, ctx, event, data, env))]
@@ -659,7 +709,7 @@ impl<T: TextStorage + EditableText> Widget<T> for TextBox<T> {
             LifeCycle::FocusChanged(true) => {
                 if self.text().can_write() && !self.multiline && !self.was_focused_from_click {
                     let selection = Selection::new(0, data.len());
-                    let _ = self.text_mut().borrow_mut().set_selection(selection);
+                    let _ = self.text_mut().borrow_mut().set_selection(data, selection);
                     ctx.invalidate_text_input(ImeInvalidation::SelectionChanged);
                 }
                 self.text_mut().has_focus = true;
@@ -672,7 +722,7 @@ impl<T: TextStorage + EditableText> Widget<T> for TextBox<T> {
                 if self.text().can_write() && MAC_OR_LINUX_OR_BSD && !self.multiline {
                     let selection = self.text().borrow().selection();
                     let selection = Selection::new(selection.active, selection.active);
-                    let _ = self.text_mut().borrow_mut().set_selection(selection);
+                    let _ = self.text_mut().borrow_mut().set_selection(data, selection);
                     ctx.invalidate_text_input(ImeInvalidation::SelectionChanged);
                 }
                 self.text_mut().has_focus = false;
@@ -910,7 +960,7 @@ mod tests {
                 let _ = textbox
                     .text_mut()
                     .borrow_mut()
-                    .set_selection(Selection::new(end, end));
+                    .set_selection(data, Selection::new(end, end));
                 textbox.scroll_to_selection_after_layout = true;
             }
             self.child.event(ctx, event, data, env);

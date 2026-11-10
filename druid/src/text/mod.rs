@@ -25,12 +25,18 @@ pub use druid_shell::text::{
 
 pub use self::attribute::{Attribute, AttributeSpans, Link};
 pub use self::backspace::offset_for_delete_backwards;
-pub use self::editable_text::{EditableText, EditableTextCursor, StringCursor};
+pub use self::editable_text::{
+    CompositeKey, CompositeTextRange, CompositeTextRangeError, EditableText, EditableTextCursor,
+    StringCursor, TextBoundary,
+};
 pub use self::font_descriptor::FontDescriptor;
 pub use self::format::{Formatter, ParseFormatter, Validation, ValidationError};
 pub use self::layout::{LayoutMetrics, TextLayout};
 pub use self::movement::{logical_line_range, movement, word_range_at, word_range_for_pos};
-pub use input_component::{EditSession, TextComponent};
+pub use input_component::{
+    ClipboardAction, ClipboardEvent, CompositeHit, EditSession, TextComponent, TextSnapshot,
+    TextTransaction,
+};
 pub use input_methods::ImeHandlerRef;
 pub use rich_text::{AttributesAdder, RichText, RichTextBuilder};
 pub use storage::{ArcStr, EnvUpdateCtx, TextStorage};
